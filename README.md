@@ -1,45 +1,72 @@
-# repoview
+<div align="center">
 
-A terminal UI for analyzing Git repositories. Visualize commit history, file churn, contributor activity, risk hotspots, and TODOs for any local path or GitHub URL.
+# 🔭 repoview
 
-## Features
+**A blazing-fast terminal UI for understanding any Git repository at a glance.**
 
-- **Overview** — repo name, path, total commits, contributors, branches, tags, size, and latest commit
-- **Hotspots** — files ranked by a risk score (commit frequency × author count, boosted for recent changes)
-- **Churn** — top files by raw commit count with last-modified dates
-- **Activity** — 30-day commit heatmap strip + contributor leaderboard
-- **Todos** — scans source files for `TODO`, `FIXME`, `HACK`, and `XXX` comments across 40+ file types
+Visualize commit history, file churn, contributor activity, risk hotspots, and TODO comments — for any local path or GitHub URL.
 
-Supports **local paths** and **remote GitHub URLs** — remote repos are cloned to a temporary directory and cleaned up automatically on exit.
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Built with Bubble Tea](https://img.shields.io/badge/Built%20with-Bubble%20Tea-ff69b4)](https://github.com/charmbracelet/bubbletea)
 
-## Requirements
+</div>
 
-- Go 1.21+
-- `git` installed and available on your `PATH`
+---
 
-## Install
+## ✨ Features
+
+| Tab | What you get |
+|-----|-------------|
+| **Overview** | Repo name, path, total commits, contributors, branches, tags, size, and latest commit |
+| **Hotspots** | Files ranked by risk score — commit frequency × author count, boosted for recent activity |
+| **Churn** | Top files by raw commit count with last-modified timestamps |
+| **Activity** | 30-day commit heatmap + contributor leaderboard |
+| **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types |
+
+> 🌐 Works with **local paths** and **remote GitHub URLs** — remote repos are cloned to a temp directory and cleaned up automatically on exit.
+
+---
+
+## 🚀 Quick Start
+
+### Install via `go install`
 
 ```bash
-git clone https://github.com/cluzier/repoview.git
+go install github.com/connerluzier/repoview@latest
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/connerluzier/repoview.git
 cd repoview
 go build -o repoview .
-```
-
-Or run directly without building:
-
-```bash
-go run .
-```
-
-## Usage
-
-```bash
-go run .
-# or if built:
 ./repoview
 ```
 
-On launch you'll see an input prompt. Enter either a local path or a GitHub URL:
+### Run without installing
+
+```bash
+go run github.com/connerluzier/repoview@latest
+```
+
+---
+
+## 🛠 Requirements
+
+- **Go 1.21+**
+- **`git`** on your `PATH`
+
+---
+
+## 📖 Usage
+
+```bash
+repoview
+```
+
+On launch, enter a local path or GitHub URL:
 
 ```
 ~/projects/my-app
@@ -48,26 +75,38 @@ https://github.com/owner/repo
 git@github.com:owner/repo.git
 ```
 
-Press **Enter** to analyze. The TUI will clone (if remote) and analyze the repository, then display the results.
+Press **Enter** — repoview clones (if remote) and analyzes the repo instantly.
 
-## Keybindings
+---
+
+## ⌨️ Keybindings
 
 | Key | Action |
 |-----|--------|
-| `←` / `→` or `Tab` | Switch tabs |
-| `↑` / `↓` or `k` / `j` | Scroll list |
+| `←` `→` or `Tab` | Switch tabs |
+| `↑` `↓` or `k` `j` | Scroll list |
 | `g` / `G` | Jump to top / bottom |
 | `r` | Refresh analysis |
-| `Esc` | Back to input screen |
+| `Esc` | Back to input |
 | `q` / `Ctrl+C` | Quit |
 
-## Built With
+---
 
-- [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI framework
-- [Bubbles](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner)
-- [Lip Gloss](https://github.com/charmbracelet/lipgloss) — styling
-- [go-git](https://github.com/go-git/go-git) — Git library
+## 🧱 Built With
 
-## License
+- [**Bubble Tea**](https://github.com/charmbracelet/bubbletea) — TUI framework
+- [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner)
+- [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling
+- [**go-git**](https://github.com/go-git/go-git) — pure Go Git implementation
 
-MIT
+---
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome! Feel free to open an issue or submit a pull request.
+
+---
+
+## 📄 License
+
+MIT © [connerluzier](https://github.com/connerluzier)

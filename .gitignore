@@ -1,0 +1,33 @@
+# Binary output
+repoview
+repoview.exe
+
+# Build artifacts
+dist/
+bin/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Go
+*.test
+*.out
+coverage.txt
+cpu.prof
+mem.prof
+
+# Temporary cloned repos (used at runtime)
+/tmp/
+
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
