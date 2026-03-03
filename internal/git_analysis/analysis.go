@@ -62,6 +62,7 @@ type ContributorActivity struct {
 type AnalysisResult struct {
 	Stats               RepoStats
 	FileChurns          []FileChurn
+	StaleFiles          []FileChurn
 	DailyActivity       []DailyActivity
 	ContributorActivity []ContributorActivity
 	Error               error
@@ -130,6 +131,18 @@ func Analyze(repoPath string) AnalysisResult {
 	}()
 
 	wg.Wait()
+
+	// Compute stale files: copy FileChurns, filter zero LastModified, sort ascending by LastModified
+	staleFiles := make([]FileChurn, 0, len(result.FileChurns))
+	for _, f := range result.FileChurns {
+		if !f.LastModified.IsZero() {
+			staleFiles = append(staleFiles, f)
+		}
+	}
+	sort.Slice(staleFiles, func(i, j int) bool {
+		return staleFiles[i].LastModified.Before(staleFiles[j].LastModified)
+	})
+	result.StaleFiles = staleFiles
 
 	result.Stats.RepoSizeBytes = repoSize(repo)
 

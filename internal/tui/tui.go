@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -123,10 +124,11 @@ const (
 	TabChurn
 	TabActivity
 	TabTodos
+	TabStale
 	tabCount
 )
 
-var tabNames = [tabCount]string{"  Overview  ", "  Hotspots  ", "  Churn  ", "  Activity  ", "  Todos  "}
+var tabNames = [tabCount]string{"  Overview  ", "  Hotspots  ", "  Churn  ", "  Activity  ", "  Todos  ", "  Stale  "}
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
@@ -142,6 +144,9 @@ type cloneDoneMsg struct {
 }
 
 type RefreshMsg struct{}
+
+type editorClosedMsg struct{ err error }
+type flashClearMsg struct{}
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -164,6 +169,11 @@ type Model struct {
 	width       int
 	height      int
 	scrollOffset int
+
+	searchMode  bool
+	searchQuery string
+	searchInput textinput.Model
+	flashMsg    string
 }
 
 func New() Model {
@@ -175,14 +185,21 @@ func New() Model {
 	ti.Width = 60
 	ti.Focus()
 
+	si := textinput.New()
+	si.PlaceholderStyle = lipgloss.NewStyle().Foreground(cMuted)
+	si.TextStyle = lipgloss.NewStyle().Foreground(colorWhite)
+	si.Cursor.Style = lipgloss.NewStyle().Foreground(cPrimary)
+	si.Width = 40
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(cPrimary)
 
 	return Model{
-		state:   stateInput,
-		input:   ti,
-		spinner: sp,
+		state:       stateInput,
+		input:       ti,
+		spinner:     sp,
+		searchInput: si,
 	}
 }
 
@@ -223,6 +240,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Result.Error
 		m.cursor = 0
 		m.scrollOffset = 0
+
+	case editorClosedMsg:
+		// no-op: just resume the TUI after the editor exits
+
+	case flashClearMsg:
+		m.flashMsg = ""
 
 	case RefreshMsg:
 		m.loading = true
@@ -281,6 +304,29 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If in search mode, handle search keys first
+	if m.searchMode {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.searchMode = false
+			m.searchQuery = ""
+			m.searchInput.SetValue("")
+			m.cursor = 0
+			m.scrollOffset = 0
+			return m, nil
+		case tea.KeyEnter:
+			m.searchMode = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			m.searchQuery = m.searchInput.Value()
+			m.cursor = 0
+			m.scrollOffset = 0
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		if m.tmpDir != "" {
@@ -289,6 +335,14 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "backspace", "esc":
+		// If a filter is active, clear it first
+		if m.searchQuery != "" {
+			m.searchQuery = ""
+			m.searchInput.SetValue("")
+			m.cursor = 0
+			m.scrollOffset = 0
+			return m, nil
+		}
 		// go back to input screen
 		if m.tmpDir != "" {
 			os.RemoveAll(m.tmpDir)
@@ -303,6 +357,16 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		return m, textinput.Blink
 
+	case "/":
+		// Enter search mode on applicable tabs
+		switch m.activeTab {
+		case TabHotspots, TabChurn, TabTodos, TabStale:
+			m.searchMode = true
+			m.searchInput.SetValue(m.searchQuery)
+			m.searchInput.Focus()
+			return m, nil
+		}
+
 	case "r":
 		return m.Update(RefreshMsg{})
 
@@ -311,6 +375,9 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeTab--
 			m.cursor = 0
 			m.scrollOffset = 0
+			m.searchMode = false
+			m.searchQuery = ""
+			m.searchInput.SetValue("")
 		}
 
 	case "right", "l":
@@ -318,6 +385,9 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeTab++
 			m.cursor = 0
 			m.scrollOffset = 0
+			m.searchMode = false
+			m.searchQuery = ""
+			m.searchInput.SetValue("")
 		}
 
 	case "up", "k":
@@ -344,6 +414,50 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeTab = (m.activeTab + 1) % tabCount
 		m.cursor = 0
 		m.scrollOffset = 0
+		m.searchMode = false
+		m.searchQuery = ""
+		m.searchInput.SetValue("")
+
+	case "enter", "o":
+		// Open current file in $EDITOR
+		path := m.currentFilePath()
+		if path == "" {
+			return m, nil
+		}
+		fullPath := filepath.Join(m.repoPath, path)
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+		}
+		if editor == "" {
+			editor = "vi"
+		}
+		var cmd *exec.Cmd
+		line := m.currentFileLine()
+		if line > 0 {
+			cmd = exec.Command(editor, fmt.Sprintf("+%d", line), fullPath)
+		} else {
+			cmd = exec.Command(editor, fullPath)
+		}
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return editorClosedMsg{err: err}
+		})
+
+	case "y":
+		// Copy file path to clipboard
+		path := m.currentFilePath()
+		if path == "" {
+			return m, nil
+		}
+		fullPath := filepath.Join(m.repoPath, path)
+		if err := clipboard.WriteAll(fullPath); err == nil {
+			m.flashMsg = "📋 Copied: " + fullPath
+		} else {
+			m.flashMsg = "✖ Clipboard error: " + err.Error()
+		}
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return flashClearMsg{}
+		})
 	}
 	return m, nil
 }
@@ -384,19 +498,15 @@ func runAnalysis(repoPath string) tea.Cmd {
 func (m *Model) listLen() int {
 	switch m.activeTab {
 	case TabHotspots:
-		if len(m.risks) > 20 {
-			return 20
-		}
-		return len(m.risks)
+		return len(m.filteredHotspots())
 	case TabChurn:
-		if len(m.result.FileChurns) > 10 {
-			return 10
-		}
-		return len(m.result.FileChurns)
+		return len(m.filteredChurns())
 	case TabActivity:
 		return len(m.result.ContributorActivity)
 	case TabTodos:
-		return len(m.todos.Items)
+		return len(m.filteredTodos())
+	case TabStale:
+		return len(m.filteredStale())
 	}
 	return 0
 }
@@ -439,6 +549,133 @@ func (m Model) bodyHeight() int {
 		h = 5
 	}
 	return h
+}
+
+// searchBarHeight returns 1 if the search bar is visible, 0 otherwise.
+func (m Model) searchBarHeight() int {
+	switch m.activeTab {
+	case TabHotspots, TabChurn, TabTodos, TabStale:
+		if m.searchMode || m.searchQuery != "" {
+			return 1
+		}
+	}
+	return 0
+}
+
+// filteredHotspots returns the top 20 risks filtered by searchQuery.
+func (m Model) filteredHotspots() []metrics.RiskEntry {
+	top := m.risks
+	if len(top) > 20 {
+		top = top[:20]
+	}
+	if m.searchQuery == "" {
+		return top
+	}
+	q := strings.ToLower(m.searchQuery)
+	var out []metrics.RiskEntry
+	for _, r := range top {
+		if strings.Contains(strings.ToLower(r.Path), q) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// filteredChurns returns the top 10 churns filtered by searchQuery.
+func (m Model) filteredChurns() []git_analysis.FileChurn {
+	top := m.result.FileChurns
+	if len(top) > 10 {
+		top = top[:10]
+	}
+	if m.searchQuery == "" {
+		return top
+	}
+	q := strings.ToLower(m.searchQuery)
+	var out []git_analysis.FileChurn
+	for _, f := range top {
+		if strings.Contains(strings.ToLower(f.Path), q) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// filteredTodos returns todo items filtered by searchQuery.
+func (m Model) filteredTodos() []metrics.TodoItem {
+	items := m.todos.Items
+	if m.searchQuery == "" {
+		return items
+	}
+	q := strings.ToLower(m.searchQuery)
+	var out []metrics.TodoItem
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item.File), q) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// filteredStale returns stale files filtered by searchQuery.
+func (m Model) filteredStale() []git_analysis.FileChurn {
+	items := m.result.StaleFiles
+	if m.searchQuery == "" {
+		return items
+	}
+	q := strings.ToLower(m.searchQuery)
+	var out []git_analysis.FileChurn
+	for _, f := range items {
+		if strings.Contains(strings.ToLower(f.Path), q) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// currentFilePath returns the relative file path for the selected item on the current tab.
+func (m Model) currentFilePath() string {
+	switch m.activeTab {
+	case TabHotspots:
+		items := m.filteredHotspots()
+		if m.cursor < len(items) {
+			return items[m.cursor].Path
+		}
+	case TabChurn:
+		items := m.filteredChurns()
+		if m.cursor < len(items) {
+			return items[m.cursor].Path
+		}
+	case TabStale:
+		items := m.filteredStale()
+		if m.cursor < len(items) {
+			return items[m.cursor].Path
+		}
+	case TabTodos:
+		items := m.filteredTodos()
+		if m.cursor < len(items) {
+			return items[m.cursor].File
+		}
+	}
+	return ""
+}
+
+// currentFileLine returns the line number for the selected item (only non-zero on TabTodos).
+func (m Model) currentFileLine() int {
+	if m.activeTab != TabTodos {
+		return 0
+	}
+	items := m.filteredTodos()
+	if m.cursor < len(items) {
+		return items[m.cursor].Line
+	}
+	return 0
+}
+
+// renderSearchBar renders the search bar.
+func (m Model) renderSearchBar() string {
+	prefix := styleAccent.Render("🔍 ")
+	hint := styleDim.Render("  Esc clear · Enter confirm")
+	return prefix + m.searchInput.View() + hint
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
@@ -530,14 +767,25 @@ func (m Model) viewMain() string {
 			body = m.renderActivity()
 		case TabTodos:
 			body = m.renderTodos()
+		case TabStale:
+			body = m.renderStale()
 		}
 	}
 
 	// Pin the body to a fixed height so the status bar never drifts
-	fixedBody := lipgloss.NewStyle().Height(m.bodyHeight()).MaxHeight(m.bodyHeight()).Render(body)
+	fixedBodyHeight := m.bodyHeight() - m.searchBarHeight()
+	if fixedBodyHeight < 1 {
+		fixedBodyHeight = 1
+	}
+	fixedBody := lipgloss.NewStyle().Height(fixedBodyHeight).MaxHeight(fixedBodyHeight).Render(body)
 	statusBar := m.renderStatusBar()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, tabs, fixedBody, statusBar)
+	parts := []string{header, tabs}
+	if m.searchBarHeight() == 1 {
+		parts = append(parts, m.renderSearchBar())
+	}
+	parts = append(parts, fixedBody, statusBar)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m Model) renderHeader() string {
@@ -590,8 +838,20 @@ func (m Model) renderStatusBar() string {
 	if descW < 0 {
 		descW = 0
 	}
-	keys := lipgloss.NewStyle().Foreground(colorText).Background(colorSurface).Bold(false).
-		Render("  " + tabLabel + "   ←/→ tabs  ↑/↓ scroll  r refresh  Esc back  q quit")
+
+	var middleText string
+	if m.flashMsg != "" {
+		middleText = "  " + m.flashMsg
+	} else {
+		base := "  " + tabLabel + "   ←/→ tabs  ↑/↓ scroll  r refresh  Esc back  q quit"
+		switch m.activeTab {
+		case TabHotspots, TabChurn, TabTodos, TabStale:
+			middleText = base + "   / filter  o open  y copy"
+		default:
+			middleText = base
+		}
+	}
+	keys := lipgloss.NewStyle().Foreground(colorText).Background(colorSurface).Bold(false).Render(middleText)
 	desc := statusBarBg.Width(descW).Render(keys)
 
 	bar := lipgloss.JoinHorizontal(lipgloss.Top, pill, desc, right)
@@ -642,9 +902,9 @@ func (m Model) renderHotspots() string {
 	if len(m.risks) == 0 {
 		return styleDim.Render("\n  No data available.")
 	}
-	top := m.risks
-	if len(top) > 20 {
-		top = top[:20]
+	top := m.filteredHotspots()
+	if len(top) == 0 {
+		return styleDim.Render("\n  No results match your filter.")
 	}
 	maxScore := top[0].Score
 	barWidth := 20
@@ -656,7 +916,7 @@ func (m Model) renderHotspots() string {
 	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
 	// Reserve space for the detail panel (separator + 3 content lines + footnote)
-	visibleRows := m.bodyHeight() - 8
+	visibleRows := m.bodyHeight() - 8 - m.searchBarHeight()
 	if visibleRows < 3 {
 		visibleRows = 3
 	}
@@ -754,9 +1014,9 @@ func (m Model) renderChurn() string {
 	if len(m.result.FileChurns) == 0 {
 		return styleDim.Render("\n  No data available.")
 	}
-	top := m.result.FileChurns
-	if len(top) > 10 {
-		top = top[:10]
+	top := m.filteredChurns()
+	if len(top) == 0 {
+		return styleDim.Render("\n  No results match your filter.")
 	}
 	maxCommits := top[0].CommitCount
 	barWidth := 25
@@ -767,7 +1027,15 @@ func (m Model) renderChurn() string {
 		"File", "Commits", "Authors", "Last Modified", "Churn")))
 	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
+	visibleRows := m.bodyHeight() - 4 - m.searchBarHeight()
+	if visibleRows < 3 {
+		visibleRows = 3
+	}
+
 	for i, f := range top {
+		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
+			continue
+		}
 		bar := utils.Heatmap(f.CommitCount, maxCommits, barWidth)
 		prefix := "  "
 		if i == m.cursor {
@@ -963,14 +1231,20 @@ func (m Model) renderTodos() string {
 		return sb.String()
 	}
 
+	items := m.filteredTodos()
+	if len(items) == 0 {
+		sb.WriteString(styleDim.Render("  No results match your filter.\n"))
+		return sb.String()
+	}
+
 	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-5s  %-6s  %-45s  %s\n", "Line", "Kind", "File", "Text")))
 	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
-	visibleRows := m.bodyHeight()
+	visibleRows := m.bodyHeight() - m.searchBarHeight()
 	if visibleRows < 5 {
 		visibleRows = 5
 	}
-	for i, item := range summary.Items {
+	for i, item := range items {
 		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
 			continue
 		}
@@ -1000,5 +1274,63 @@ func (m Model) renderTodos() string {
 			sb.WriteString(row + "\n")
 		}
 	}
+	return sb.String()
+}
+
+// ── Stale Files ───────────────────────────────────────────────────────────────
+
+func (m Model) renderStale() string {
+	if len(m.result.StaleFiles) == 0 {
+		return styleDim.Render("\n  No data available.")
+	}
+	items := m.filteredStale()
+	if len(items) == 0 {
+		return styleDim.Render("\n  No results match your filter.")
+	}
+
+	now := time.Now()
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-50s  %-14s  %7s  %s\n",
+		"File", "Last Modified", "Commits", "Dormant")))
+	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
+
+	visibleRows := m.bodyHeight() - 4 - m.searchBarHeight()
+	if visibleRows < 3 {
+		visibleRows = 3
+	}
+
+	for i, f := range items {
+		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
+			continue
+		}
+		days := int(now.Sub(f.LastModified).Hours() / 24)
+		var dormantStyle lipgloss.Style
+		switch {
+		case days > 365:
+			dormantStyle = styleDanger
+		case days > 180:
+			dormantStyle = styleWarning
+		default:
+			dormantStyle = styleSuccess
+		}
+		prefix := "  "
+		if i == m.cursor {
+			prefix = styleAccent.Render("▶ ")
+		}
+		row := fmt.Sprintf("%s%-50s  %-14s  %7d  %s",
+			prefix,
+			utils.Truncate(f.Path, 50),
+			f.LastModified.Format("2006-01-02"),
+			f.CommitCount,
+			dormantStyle.Render(fmt.Sprintf("%d days", days)),
+		)
+		if i == m.cursor {
+			sb.WriteString(styleSelected.Render(row) + "\n")
+		} else {
+			sb.WriteString(row + "\n")
+		}
+	}
+	sb.WriteString(styleDim.Render("\n  Files sorted by oldest last-modified — potential dead code.\n"))
 	return sb.String()
 }
