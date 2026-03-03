@@ -257,14 +257,14 @@ func computeFileChurn(rootPath string) []FileChurn {
 	return churns
 }
 
-// computeDailyActivity returns commit counts per day for the last 30 days.
+// computeDailyActivity returns commit counts per day for the last 365 days.
 func computeDailyActivity(rootPath string) []DailyActivity {
 	now := time.Now()
-	since := now.AddDate(0, 0, -30).Format("2006-01-02")
+	since := now.AddDate(0, 0, -365).Format("2006-01-02")
 
 	out, err := runGit(rootPath, "log", "--format=%ai", "--since="+since)
 	if err != nil {
-		return make([]DailyActivity, 30)
+		return make([]DailyActivity, 365)
 	}
 
 	dayMap := make(map[string]int)
@@ -276,9 +276,9 @@ func computeDailyActivity(rootPath string) []DailyActivity {
 		}
 	}
 
-	daily := make([]DailyActivity, 30)
-	for i := 0; i < 30; i++ {
-		d := now.AddDate(0, 0, -(29 - i))
+	daily := make([]DailyActivity, 365)
+	for i := 0; i < 365; i++ {
+		d := now.AddDate(0, 0, -(364 - i))
 		key := d.Format("2006-01-02")
 		daily[i] = DailyActivity{Date: d, Count: dayMap[key]}
 	}

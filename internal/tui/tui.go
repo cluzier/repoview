@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -654,7 +655,11 @@ func (m Model) renderHotspots() string {
 		"File", "Score", "Commits", "Authors", "Risk")))
 	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
-	visibleRows := m.bodyHeight()
+	// Reserve space for the detail panel (separator + 3 content lines + footnote)
+	visibleRows := m.bodyHeight() - 8
+	if visibleRows < 3 {
+		visibleRows = 3
+	}
 
 	for i, r := range top {
 		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
@@ -692,7 +697,54 @@ func (m Model) renderHotspots() string {
 			sb.WriteString(row + "\n")
 		}
 	}
-	sb.WriteString(styleDim.Render("\n  * recently modified (score ×1.2)"))
+
+	// ── Detail panel for selected entry ───────────────────────────────────────
+	sb.WriteString(styleDim.Render("\n  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
+	if m.cursor < len(top) {
+		r := top[m.cursor]
+		sb.WriteString(m.renderHotspotDetail(r, maxScore))
+	}
+	sb.WriteString(styleDim.Render("  score = commits × authors" + "   * recently modified (×1.2)\n"))
+	return sb.String()
+}
+
+func (m Model) renderHotspotDetail(r metrics.RiskEntry, maxScore float64) string {
+	var sb strings.Builder
+
+	ratio := r.Score / maxScore
+	var level, icon string
+	var levelStyle lipgloss.Style
+	var desc, advice string
+
+	switch {
+	case ratio >= 0.75:
+		level, icon = "CRITICAL", "🔴"
+		levelStyle = styleDanger
+		desc = fmt.Sprintf("One of the riskiest files in the repo — %d commits across %d author(s).", r.CommitCount, r.Authors)
+		advice = "Strong candidate for refactoring, ownership clarification, or additional test coverage."
+	case ratio >= 0.4:
+		level, icon = "HIGH RISK", "🟡"
+		levelStyle = styleWarning
+		desc = fmt.Sprintf("Elevated churn — %d commits from %d author(s). Prone to merge conflicts.", r.CommitCount, r.Authors)
+		advice = "Consider splitting responsibilities or adding guards against regression."
+	default:
+		level, icon = "STABLE", "🟢"
+		levelStyle = styleSuccess
+		desc = fmt.Sprintf("Low churn — %d commits from %d author(s). Relatively safe to modify.", r.CommitCount, r.Authors)
+		advice = "No immediate concern. Keep an eye on it if contributor count grows."
+	}
+
+	bonus := ""
+	if r.RecentBonus {
+		bonus = styleWarning.Render("  ⚡ recently modified")
+	}
+
+	pw := m.panelWidth()
+	fileLabel := styleAccent.Render(utils.Truncate(r.Path, pw-30))
+	scoreLabel := levelStyle.Render(fmt.Sprintf("%.1f", r.Score)) + "  " + icon + "  " + levelStyle.Bold(true).Render(level) + bonus
+
+	sb.WriteString(fmt.Sprintf("  %s   %s\n", fileLabel, scoreLabel))
+	sb.WriteString(fmt.Sprintf("  %s\n", styleDim.Render(desc+"  "+advice)))
 	return sb.String()
 }
 
@@ -743,28 +795,84 @@ func (m Model) renderChurn() string {
 func (m Model) renderActivity() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString(stylePrimary.Render("  Commits — last 30 days") + "\n\n")
+	sb.WriteString(stylePrimary.Render("  Commit Calendar") + "\n\n")
 
 	daily := m.result.DailyActivity
-	maxDay := 0
+
+	// Build date → count map
+	dayMap := make(map[string]int)
+	maxCount := 0
 	for _, d := range daily {
-		if d.Count > maxDay {
-			maxDay = d.Count
+		key := d.Date.Format("2006-01-02")
+		dayMap[key] = d.Count
+		if d.Count > maxCount {
+			maxCount = d.Count
 		}
 	}
 
-	sb.WriteString("  ")
-	for _, d := range daily {
-		sb.WriteString(activityBlock(d.Count, maxDay))
+	now := time.Now()
+	todayWeekday := int(now.Weekday()) // 0 = Sunday
+
+	const cellWidth = 2  // each cell: "█ " or "░ "
+	const labelWidth = 4 // day label + space + indent
+	numWeeks := (m.panelWidth() - labelWidth) / cellWidth
+	if numWeeks > 52 {
+		numWeeks = 52
 	}
+	if numWeeks < 4 {
+		numWeeks = 4
+	}
+
+	// Sunday that opens the oldest visible week
+	currentWeekSunday := now.AddDate(0, 0, -todayWeekday)
+	startSunday := currentWeekSunday.AddDate(0, 0, -(numWeeks-1)*7)
+
+	// ── Month labels ──────────────────────────────────────────────────────────
+	monthBuf := []byte(strings.Repeat(" ", numWeeks*cellWidth))
+	prevMonth := time.Month(-1)
+	for w := 0; w < numWeeks; w++ {
+		weekStart := startSunday.AddDate(0, 0, w*7)
+		if weekStart.Month() != prevMonth {
+			label := []byte(weekStart.Format("Jan"))
+			pos := w * cellWidth
+			end := pos + len(label)
+			if end > len(monthBuf) {
+				end = len(monthBuf)
+			}
+			copy(monthBuf[pos:end], label)
+			prevMonth = weekStart.Month()
+		}
+	}
+	sb.WriteString("    " + styleLabel.Render(string(monthBuf)) + "\n")
+
+	// ── 7-row × numWeeks-col calendar grid ────────────────────────────────────
+	// Show label on Mon (1), Wed (3), Fri (5); blank on others to match GitHub.
+	dayAbbrev := [7]string{"S", " ", "T", " ", "T", " ", "S"}
+	for row := 0; row < 7; row++ {
+		sb.WriteString("  ")
+		sb.WriteString(styleLabel.Render(dayAbbrev[row]) + " ")
+		for w := 0; w < numWeeks; w++ {
+			date := startSunday.AddDate(0, 0, w*7+row)
+			if date.After(now) {
+				sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#21262d")).Render("░ "))
+				continue
+			}
+			key := date.Format("2006-01-02")
+			sb.WriteString(calendarCell(dayMap[key], maxCount))
+		}
+		sb.WriteString("\n")
+	}
+
+	// ── Legend ────────────────────────────────────────────────────────────────
 	sb.WriteString("\n  ")
-	if len(daily) > 0 {
-		sb.WriteString(styleDim.Render(daily[0].Date.Format("Jan 2")))
-		sb.WriteString(strings.Repeat(" ", 28))
-		sb.WriteString(styleDim.Render(daily[len(daily)-1].Date.Format("Jan 2")))
+	sb.WriteString(styleLabel.Render("Less "))
+	for _, v := range []int{0, 1, 3, 6, 10} {
+		sb.WriteString(calendarCell(v, 10))
 	}
+	sb.WriteString(styleLabel.Render(" More"))
 	sb.WriteString("\n")
 
+	// ── Contributor leaderboard ───────────────────────────────────────────────
 	contribs := m.result.ContributorActivity
 	if len(contribs) == 0 {
 		return sb.String()
@@ -779,7 +887,7 @@ func (m Model) renderActivity() string {
 	for _, c := range contribs {
 		total += c.Count
 	}
-	visibleRows := m.bodyHeight() - 10
+	visibleRows := m.bodyHeight() - 14
 	if visibleRows < 5 {
 		visibleRows = 5
 	}
@@ -806,23 +914,24 @@ func (m Model) renderActivity() string {
 	return sb.String()
 }
 
-func activityBlock(count, max int) string {
-	if max == 0 {
-		return styleDim.Render("░")
+// calendarCell returns a styled 2-char cell matching GitHub's contribution palette.
+func calendarCell(count, max int) string {
+	if count == 0 || max == 0 {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#21262d")).Render("░ ")
 	}
 	ratio := float64(count) / float64(max)
+	var color string
 	switch {
-	case ratio == 0:
-		return styleDim.Render("░")
-	case ratio < 0.25:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("25")).Render("▒")
-	case ratio < 0.5:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("▓")
-	case ratio < 0.75:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("█")
+	case ratio <= 0.25:
+		color = "#0e4429"
+	case ratio <= 0.50:
+		color = "#006d32"
+	case ratio <= 0.75:
+		color = "#26a641"
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render("█")
+		color = "#39d353"
 	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("█ ")
 }
 
 // ── Todos ────────────────────────────────────────────────────────────────────
