@@ -19,10 +19,11 @@ Visualize commit history, file churn, contributor activity, risk hotspots, and T
 | Tab | What you get |
 |-----|-------------|
 | **Overview** | Repo name, path, total commits, contributors, branches, tags, size, and latest commit |
-| **Hotspots** | Files ranked by risk score — commit frequency × author count, boosted for recent activity |
+| **Hotspots** | Files ranked by risk score — commit frequency × author count, boosted for recent activity. Contextual risk description updates as you scroll. |
 | **Churn** | Top files by raw commit count with last-modified timestamps |
-| **Activity** | 30-day commit heatmap + contributor leaderboard |
+| **Activity** | 52-week GitHub-style contribution calendar + contributor leaderboard |
 | **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types |
+| **Stale** | Files sorted by oldest last-modified — great for spotting dead code |
 
 > 🌐 Works with **local paths** and **remote GitHub URLs** — remote repos are cloned to a temp directory and cleaned up automatically on exit.
 
@@ -86,8 +87,11 @@ Press **Enter** — repoview clones (if remote) and analyzes the repo instantly.
 | `←` `→` or `Tab` | Switch tabs |
 | `↑` `↓` or `k` `j` | Scroll list |
 | `g` / `G` | Jump to top / bottom |
+| `/` | Filter list by filename (Hotspots, Churn, Todos, Stale) |
+| `o` / `Enter` | Open selected file in `$EDITOR` at the correct line |
+| `y` | Copy selected file path to clipboard |
 | `r` | Refresh analysis |
-| `Esc` | Back to input |
+| `Esc` | Clear filter → back to input |
 | `q` / `Ctrl+C` | Quit |
 
 ---
