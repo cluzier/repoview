@@ -2,9 +2,9 @@
 
 # 🔭 repoview
 
-**A blazing-fast terminal UI for understanding any Git repository at a glance.**
+**A terminal UI for understanding any Git repository at a glance.**
 
-Visualize commit history, file churn, contributor activity, risk hotspots, and TODO comments — for any local path or GitHub URL.
+Visualize commit history, file churn, contributor activity, TODO comments, and stale files — for any local path or GitHub URL.
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -19,13 +19,12 @@ Visualize commit history, file churn, contributor activity, risk hotspots, and T
 | Tab | What you get |
 |-----|-------------|
 | **Overview** | Repo name, path, total commits, contributors, branches, tags, size, and latest commit |
-| **Hotspots** | Files ranked by risk score — commit frequency × author count, boosted for recent activity. Contextual risk description updates as you scroll. |
-| **Churn** | Top files by raw commit count with last-modified timestamps |
-| **Activity** | 52-week GitHub-style contribution calendar + contributor leaderboard |
-| **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types |
-| **Stale** | Files sorted by oldest last-modified — great for spotting dead code |
+| **Churn** | Files ranked by raw commit count with heatmap bars, author counts, and last-modified timestamps |
+| **Activity** | 52-week contribution calendar + contributor leaderboard with commit share |
+| **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with badge summary |
+| **Stale** | Files sorted by oldest last-modified — useful for spotting dead code |
 
-> 🌐 Works with **local paths** and **remote GitHub URLs** — remote repos are cloned to a temp directory and cleaned up automatically on exit.
+> Works with **local paths** and **remote GitHub URLs**. Remote repos are cloned to a temp directory and cleaned up automatically on exit.
 
 ---
 
@@ -46,12 +45,6 @@ go build -o repoview .
 ./repoview
 ```
 
-### Run without installing
-
-```bash
-go run github.com/connerluzier/repoview@latest
-```
-
 ---
 
 ## 🛠 Requirements
@@ -67,7 +60,7 @@ go run github.com/connerluzier/repoview@latest
 repoview
 ```
 
-On launch, enter a local path or GitHub URL:
+On launch, enter a local path or GitHub URL and press **Enter**:
 
 ```
 ~/projects/my-app
@@ -76,38 +69,65 @@ https://github.com/owner/repo
 git@github.com:owner/repo.git
 ```
 
-Press **Enter** — repoview clones (if remote) and analyzes the repo instantly.
+Paths starting with `~` are expanded to your home directory on all platforms.
 
 ---
 
 ## ⌨️ Keybindings
 
+### Navigation
+
 | Key | Action |
 |-----|--------|
 | `←` `→` or `Tab` | Switch tabs |
-| `↑` `↓` or `k` `j` | Scroll list |
-| `g` / `G` | Jump to top / bottom |
-| `/` | Filter list by filename (Hotspots, Churn, Todos, Stale) |
-| `o` / `Enter` | Open selected file in `$EDITOR` at the correct line |
+| `↑` `↓` or `k` `j` | Move cursor through the current page |
+| `g` / `G` | Jump to first / last item |
+| `Esc` | Clear filter → back to input screen |
+| `q` / `Ctrl+C` | Quit |
+
+### Within list tabs (Churn, Activity, Todos, Stale)
+
+| Key | Action |
+|-----|--------|
+| `/` | Filter list by filename |
+| `o` / `Enter` | Open selected file in the built-in viewer |
 | `y` | Copy selected file path to clipboard |
 | `r` | Refresh analysis |
-| `Esc` | Clear filter → back to input |
-| `q` / `Ctrl+C` | Quit |
+
+### File viewer
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Scroll line by line |
+| `PgUp` `PgDn` | Scroll page by page |
+| `q` / `Esc` | Close viewer, return to list |
+
+---
+
+## File Viewer
+
+Pressing `o` or `Enter` on any file opens it in a full-screen viewport inside the TUI — no external editor required. Files are displayed with line numbers. On the **Todos** tab the viewer scrolls directly to the relevant line.
+
+---
+
+## Pagination
+
+Long lists are paginated automatically based on your terminal height. The current page and total pages are shown below each table (`page 1 / 4`). Navigate between pages by moving the cursor past the top or bottom of the current page.
 
 ---
 
 ## 🧱 Built With
 
 - [**Bubble Tea**](https://github.com/charmbracelet/bubbletea) — TUI framework
-- [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner)
-- [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling
+- [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner, paginator, viewport)
+- [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling and layout
 - [**go-git**](https://github.com/go-git/go-git) — pure Go Git implementation
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to open an issue or submit a pull request.
+Contributions, issues, and feature requests are welcome. Feel free to open an issue or submit a pull request.
 
 ---
 
