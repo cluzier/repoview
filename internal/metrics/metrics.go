@@ -89,12 +89,22 @@ func ScanTodos(repoPath string) TodoSummary {
 		if err != nil {
 			return nil
 		}
-		// Skip hidden directories (including .git)
+		// Skip hidden directories (including .git) and common build output dirs
 		if d.IsDir() {
 			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" ||
+				name == "dist" || name == "build" || name == ".next" || name == "out" ||
+				name == "coverage" || name == "__pycache__" || name == ".cache" ||
+				name == "target" || name == "bin" || name == "obj" {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Skip generated lock files and large auto-generated files
+		base := filepath.Base(path)
+		if base == "package-lock.json" || base == "yarn.lock" || base == "pnpm-lock.yaml" ||
+			base == "Cargo.lock" || base == "go.sum" || base == "poetry.lock" ||
+			base == "composer.lock" || base == "Gemfile.lock" {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))

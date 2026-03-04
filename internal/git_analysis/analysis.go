@@ -5,6 +5,7 @@ package git_analysis
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -144,7 +145,7 @@ func Analyze(repoPath string) AnalysisResult {
 	})
 	result.StaleFiles = staleFiles
 
-	result.Stats.RepoSizeBytes = repoSize(repo)
+	result.Stats.RepoSizeBytes = repoSize(repo, rootPath)
 
 	return result
 }
@@ -171,13 +172,24 @@ func computeOverviewStats(repo *git.Repository, rootPath string) RepoStats {
 		}
 	}
 
-	// Branches
-	branchIter, err := repo.Branches()
+	// Branches: count unique names across local and all remotes
+	out, err = runGit(rootPath, "branch", "-a", "--format=%(refname:short)")
 	if err == nil {
-		_ = branchIter.ForEach(func(_ *plumbing.Reference) error {
-			stats.TotalBranches++
-			return nil
-		})
+		seen := make(map[string]struct{})
+		scanner := bufio.NewScanner(strings.NewReader(out))
+		for scanner.Scan() {
+			raw := strings.TrimSpace(scanner.Text())
+			if raw == "" || strings.HasSuffix(raw, "/HEAD") {
+				continue
+			}
+			// normalize "origin/main" → "main" for deduplication
+			name := raw
+			if idx := strings.LastIndex(raw, "/"); idx >= 0 {
+				name = raw[idx+1:]
+			}
+			seen[name] = struct{}{}
+		}
+		stats.TotalBranches = len(seen)
 	}
 
 	// Tags
@@ -254,6 +266,13 @@ func computeFileChurn(rootPath string) []FileChurn {
 		}
 	}
 
+	// Filter out files that no longer exist on disk
+	for path := range fileMap {
+		if _, err := os.Stat(filepath.Join(rootPath, path)); os.IsNotExist(err) {
+			delete(fileMap, path)
+		}
+	}
+
 	churns := make([]FileChurn, 0, len(fileMap))
 	for path, fd := range fileMap {
 		churns = append(churns, FileChurn{
@@ -300,7 +319,7 @@ func computeDailyActivity(rootPath string) []DailyActivity {
 
 // computeContributors returns per-author commit counts across all time.
 func computeContributors(rootPath string) []ContributorActivity {
-	out, err := runGit(rootPath, "log", "--format=%an|%ae")
+	out, err := runGit(rootPath, "log", "--all", "--no-merges", "--format=%an|%ae")
 	if err != nil {
 		return nil
 	}
@@ -335,16 +354,29 @@ func computeContributors(rootPath string) []ContributorActivity {
 	return result
 }
 
-// repoSize estimates the repo size by summing object pack files.
-func repoSize(repo *git.Repository) int64 {
+// repoSize estimates the repo size, falling back to walking the .git directory.
+func repoSize(repo *git.Repository, rootPath string) int64 {
 	storer := repo.Storer
 	if sizer, ok := storer.(interface{ ObjectStorageSize() (uint64, error) }); ok {
 		n, err := sizer.ObjectStorageSize()
-		if err == nil {
+		if err == nil && n > 0 {
 			return int64(n)
 		}
 	}
-	return 0
+	// Fallback: walk .git directory and sum file sizes
+	var total int64
+	gitDir := filepath.Join(rootPath, ".git")
+	_ = filepath.WalkDir(gitDir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 func runGit(dir string, args ...string) (string, error) {

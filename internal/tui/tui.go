@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	ltable "github.com/charmbracelet/lipgloss/table"
 	"github.com/connerluzier/repoview/internal/git_analysis"
 	"github.com/connerluzier/repoview/internal/metrics"
 	"github.com/connerluzier/repoview/internal/utils"
@@ -27,10 +28,19 @@ var (
 	colorYellow = lipgloss.AdaptiveColor{Light: "#b0ad09", Dark: "#e0d44f"}
 	colorGreen  = lipgloss.AdaptiveColor{Light: "#1fb009", Dark: "#3fd020"}
 	colorGray   = lipgloss.AdaptiveColor{Light: "#636363", Dark: "#888888"}
-	colorWhite  = lipgloss.Color("#FFFDF5")
+	colorFg     = lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#FFFDF5"}
 	colorSubtle = lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#383838"}
 	colorText   = lipgloss.AdaptiveColor{Light: "#343433", Dark: "#C1C6B2"}
 	colorSurface = lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#353533"}
+
+	// Calendar cell colors — adaptive for light and dark terminals
+	calendarEmpty  = lipgloss.AdaptiveColor{Light: "#ebedf0", Dark: "#21262d"}
+	calendarLevels = [4]lipgloss.AdaptiveColor{
+		{Light: "#9be9a8", Dark: "#0e4429"},
+		{Light: "#40c463", Dark: "#006d32"},
+		{Light: "#30a14e", Dark: "#26a641"},
+		{Light: "#216e39", Dark: "#39d353"},
+	}
 
 	// keep these for backward compat with input screen
 	cPrimary = lipgloss.Color("#347aeb")
@@ -44,7 +54,7 @@ var (
 var (
 	styleBold    = lipgloss.NewStyle().Bold(true)
 	styleLabel   = lipgloss.NewStyle().Foreground(colorGray)
-	styleValue   = lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
+	styleValue   = lipgloss.NewStyle().Foreground(colorFg).Bold(true)
 	styleDim     = lipgloss.NewStyle().Foreground(colorSubtle)
 	styleDanger  = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 	styleWarning = lipgloss.NewStyle().Foreground(colorYellow)
@@ -120,7 +130,6 @@ type Tab int
 
 const (
 	TabOverview Tab = iota
-	TabHotspots
 	TabChurn
 	TabActivity
 	TabTodos
@@ -128,13 +137,12 @@ const (
 	tabCount
 )
 
-var tabNames = [tabCount]string{"  Overview  ", "  Hotspots  ", "  Churn  ", "  Activity  ", "  Todos  ", "  Stale  "}
+var tabNames = [tabCount]string{"  Overview  ", "  Churn  ", "  Activity  ", "  Todos  ", "  Stale  "}
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 type AnalysisDoneMsg struct {
 	Result git_analysis.AnalysisResult
-	Risks  []metrics.RiskEntry
 	Todos  metrics.TodoSummary
 }
 
@@ -163,7 +171,6 @@ type Model struct {
 	loading     bool
 	err         error
 	result      git_analysis.AnalysisResult
-	risks       []metrics.RiskEntry
 	todos       metrics.TodoSummary
 	cursor      int
 	width       int
@@ -180,14 +187,14 @@ func New() Model {
 	ti := textinput.New()
 	ti.Placeholder = "~/projects/myrepo  or  https://github.com/owner/repo"
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(cMuted)
-	ti.TextStyle = lipgloss.NewStyle().Foreground(colorWhite)
+	ti.TextStyle = lipgloss.NewStyle().Foreground(colorFg)
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(cPrimary)
 	ti.Width = 60
 	ti.Focus()
 
 	si := textinput.New()
 	si.PlaceholderStyle = lipgloss.NewStyle().Foreground(cMuted)
-	si.TextStyle = lipgloss.NewStyle().Foreground(colorWhite)
+	si.TextStyle = lipgloss.NewStyle().Foreground(colorFg)
 	si.Cursor.Style = lipgloss.NewStyle().Foreground(cPrimary)
 	si.Width = 40
 
@@ -235,7 +242,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.state = stateMain
 		m.result = msg.Result
-		m.risks = msg.Risks
 		m.todos = msg.Todos
 		m.err = msg.Result.Error
 		m.cursor = 0
@@ -284,7 +290,13 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loadingMsg = "Cloning repository…"
 			return m, cloneRepo(raw)
 		}
-		abs, err := filepath.Abs(raw)
+		expanded, err := expandPath(raw)
+		if err != nil {
+			m.inputErr = fmt.Sprintf("Invalid path: %v", err)
+			m.state = stateInput
+			return m, nil
+		}
+		abs, err := filepath.Abs(expanded)
 		if err != nil {
 			m.inputErr = fmt.Sprintf("Invalid path: %v", err)
 			m.state = stateInput
@@ -349,10 +361,10 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tmpDir = ""
 		}
 		m.state = stateInput
+		m.activeTab = TabOverview
 		m.input.SetValue("")
 		m.inputErr = ""
 		m.result = git_analysis.AnalysisResult{}
-		m.risks = nil
 		m.todos = metrics.TodoSummary{}
 		m.err = nil
 		return m, textinput.Blink
@@ -360,7 +372,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		// Enter search mode on applicable tabs
 		switch m.activeTab {
-		case TabHotspots, TabChurn, TabTodos, TabStale:
+		case TabChurn, TabTodos, TabStale:
 			m.searchMode = true
 			m.searchInput.SetValue(m.searchQuery)
 			m.searchInput.Focus()
@@ -464,6 +476,18 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// expandPath expands a leading ~ to the user's home directory.
+func expandPath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		p = home + p[1:]
+	}
+	return p, nil
+}
+
 func isRemoteURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "git@")
 }
@@ -489,16 +513,13 @@ func runAnalysis(repoPath string) tea.Cmd {
 		if result.Error != nil {
 			return AnalysisDoneMsg{Result: result}
 		}
-		risks := metrics.ComputeRiskScores(result.FileChurns)
 		todos := metrics.ScanTodos(repoPath)
-		return AnalysisDoneMsg{Result: result, Risks: risks, Todos: todos}
+		return AnalysisDoneMsg{Result: result, Todos: todos}
 	}
 }
 
 func (m *Model) listLen() int {
 	switch m.activeTab {
-	case TabHotspots:
-		return len(m.filteredHotspots())
 	case TabChurn:
 		return len(m.filteredChurns())
 	case TabActivity:
@@ -554,31 +575,12 @@ func (m Model) bodyHeight() int {
 // searchBarHeight returns 1 if the search bar is visible, 0 otherwise.
 func (m Model) searchBarHeight() int {
 	switch m.activeTab {
-	case TabHotspots, TabChurn, TabTodos, TabStale:
+	case TabChurn, TabTodos, TabStale:
 		if m.searchMode || m.searchQuery != "" {
 			return 1
 		}
 	}
 	return 0
-}
-
-// filteredHotspots returns the top 20 risks filtered by searchQuery.
-func (m Model) filteredHotspots() []metrics.RiskEntry {
-	top := m.risks
-	if len(top) > 20 {
-		top = top[:20]
-	}
-	if m.searchQuery == "" {
-		return top
-	}
-	q := strings.ToLower(m.searchQuery)
-	var out []metrics.RiskEntry
-	for _, r := range top {
-		if strings.Contains(strings.ToLower(r.Path), q) {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // filteredChurns returns the top 10 churns filtered by searchQuery.
@@ -635,11 +637,6 @@ func (m Model) filteredStale() []git_analysis.FileChurn {
 // currentFilePath returns the relative file path for the selected item on the current tab.
 func (m Model) currentFilePath() string {
 	switch m.activeTab {
-	case TabHotspots:
-		items := m.filteredHotspots()
-		if m.cursor < len(items) {
-			return items[m.cursor].Path
-		}
 	case TabChurn:
 		items := m.filteredChurns()
 		if m.cursor < len(items) {
@@ -759,8 +756,6 @@ func (m Model) viewMain() string {
 		switch m.activeTab {
 		case TabOverview:
 			body = m.renderOverview()
-		case TabHotspots:
-			body = m.renderHotspots()
 		case TabChurn:
 			body = m.renderChurn()
 		case TabActivity:
@@ -845,7 +840,7 @@ func (m Model) renderStatusBar() string {
 	} else {
 		base := "  " + tabLabel + "   ←/→ tabs  ↑/↓ scroll  r refresh  Esc back  q quit"
 		switch m.activeTab {
-		case TabHotspots, TabChurn, TabTodos, TabStale:
+		case TabChurn, TabTodos, TabStale:
 			middleText = base + "   / filter  o open  y copy"
 		default:
 			middleText = base
@@ -896,119 +891,40 @@ func (m Model) renderOverview() string {
 	return strings.Join(lines, "\n")
 }
 
-// ── Hotspots ──────────────────────────────────────────────────────────────────
+// ── Table helper ──────────────────────────────────────────────────────────────
 
-func (m Model) renderHotspots() string {
-	if len(m.risks) == 0 {
-		return styleDim.Render("\n  No data available.")
-	}
-	top := m.filteredHotspots()
-	if len(top) == 0 {
-		return styleDim.Render("\n  No results match your filter.")
-	}
-	maxScore := top[0].Score
-	barWidth := 20
+// newTable builds a lipgloss table with consistent app-wide styling.
+// selectedInView is the cursor's 0-based position within the visible window.
+func (m Model) newTable(selectedInView int, headers []string, rows [][]string) string {
+	cellStyle := lipgloss.NewStyle().Foreground(colorText).PaddingLeft(1).PaddingRight(1)
+	headerStyle := lipgloss.NewStyle().Foreground(colorGray).PaddingLeft(1).PaddingRight(1)
+	selectedStyle := lipgloss.NewStyle().Foreground(colorBlue).Bold(true).PaddingLeft(1).PaddingRight(1)
 
-	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-50s  %8s  %7s  %7s  %s\n",
-		"File", "Score", "Commits", "Authors", "Risk")))
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
-
-	// Reserve space for the detail panel (separator + 3 content lines + footnote)
-	visibleRows := m.bodyHeight() - 8 - m.searchBarHeight()
-	if visibleRows < 3 {
-		visibleRows = 3
-	}
-
-	for i, r := range top {
-		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
-			continue
-		}
-		bar := utils.Heatmap(int(r.Score*10), int(maxScore*10), barWidth)
-		bonus := ""
-		if r.RecentBonus {
-			bonus = styleWarning.Render("*")
-		}
-		scoreStr := fmt.Sprintf("%.1f", r.Score) + bonus
-
-		var scoreStyle lipgloss.Style
-		switch {
-		case r.Score >= maxScore*0.75:
-			scoreStyle = styleDanger
-		case r.Score >= maxScore*0.4:
-			scoreStyle = styleWarning
-		default:
-			scoreStyle = styleSuccess
-		}
-
-		prefix := "  "
-		if i == m.cursor {
-			prefix = styleAccent.Render("▶ ")
-		}
-
-		filePart := utils.Truncate(r.Path, 50)
-		row := fmt.Sprintf("%s%-50s  %8s  %7d  %7d  %s",
-			prefix, filePart, scoreStyle.Render(scoreStr), r.CommitCount, r.Authors, bar)
-
-		if i == m.cursor {
-			sb.WriteString(styleSelected.Render(row) + "\n")
-		} else {
-			sb.WriteString(row + "\n")
-		}
-	}
-
-	// ── Detail panel for selected entry ───────────────────────────────────────
-	sb.WriteString(styleDim.Render("\n  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
-	if m.cursor < len(top) {
-		r := top[m.cursor]
-		sb.WriteString(m.renderHotspotDetail(r, maxScore))
-	}
-	sb.WriteString(styleDim.Render("  score = commits × authors" + "   * recently modified (×1.2)\n"))
-	return sb.String()
+	t := ltable.New().
+		Border(lipgloss.NormalBorder()).
+		BorderTop(false).
+		BorderBottom(false).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderColumn(false).
+		BorderHeader(true).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		Width(m.panelWidth()).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == ltable.HeaderRow {
+				return headerStyle
+			}
+			if row == selectedInView {
+				return selectedStyle
+			}
+			return cellStyle
+		}).
+		Headers(headers...).
+		Rows(rows...)
+	return t.Render()
 }
 
-func (m Model) renderHotspotDetail(r metrics.RiskEntry, maxScore float64) string {
-	var sb strings.Builder
-
-	ratio := r.Score / maxScore
-	var level, icon string
-	var levelStyle lipgloss.Style
-	var desc, advice string
-
-	switch {
-	case ratio >= 0.75:
-		level, icon = "CRITICAL", "🔴"
-		levelStyle = styleDanger
-		desc = fmt.Sprintf("One of the riskiest files in the repo — %d commits across %d author(s).", r.CommitCount, r.Authors)
-		advice = "Strong candidate for refactoring, ownership clarification, or additional test coverage."
-	case ratio >= 0.4:
-		level, icon = "HIGH RISK", "🟡"
-		levelStyle = styleWarning
-		desc = fmt.Sprintf("Elevated churn — %d commits from %d author(s). Prone to merge conflicts.", r.CommitCount, r.Authors)
-		advice = "Consider splitting responsibilities or adding guards against regression."
-	default:
-		level, icon = "STABLE", "🟢"
-		levelStyle = styleSuccess
-		desc = fmt.Sprintf("Low churn — %d commits from %d author(s). Relatively safe to modify.", r.CommitCount, r.Authors)
-		advice = "No immediate concern. Keep an eye on it if contributor count grows."
-	}
-
-	bonus := ""
-	if r.RecentBonus {
-		bonus = styleWarning.Render("  ⚡ recently modified")
-	}
-
-	pw := m.panelWidth()
-	fileLabel := styleAccent.Render(utils.Truncate(r.Path, pw-30))
-	scoreLabel := levelStyle.Render(fmt.Sprintf("%.1f", r.Score)) + "  " + icon + "  " + levelStyle.Bold(true).Render(level) + bonus
-
-	sb.WriteString(fmt.Sprintf("  %s   %s\n", fileLabel, scoreLabel))
-	sb.WriteString(fmt.Sprintf("  %s\n", styleDim.Render(desc+"  "+advice)))
-	return sb.String()
-}
-
-// ── Churn ────────────────────────────────────────────────────────────────────
+// ── Churn ─────────────────────────────────────────────────────────────────────
 
 func (m Model) renderChurn() string {
 	if len(m.result.FileChurns) == 0 {
@@ -1019,43 +935,34 @@ func (m Model) renderChurn() string {
 		return styleDim.Render("\n  No results match your filter.")
 	}
 	maxCommits := top[0].CommitCount
-	barWidth := 25
 
-	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-50s  %7s  %7s  %-12s  %s\n",
-		"File", "Commits", "Authors", "Last Modified", "Churn")))
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
-
-	visibleRows := m.bodyHeight() - 4 - m.searchBarHeight()
+	// 1 blank line + table header(1) + separator(1) = 3 overhead
+	visibleRows := m.bodyHeight() - m.searchBarHeight() - 3
 	if visibleRows < 3 {
 		visibleRows = 3
 	}
 
-	for i, f := range top {
-		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
-			continue
-		}
-		bar := utils.Heatmap(f.CommitCount, maxCommits, barWidth)
-		prefix := "  "
-		if i == m.cursor {
-			prefix = styleAccent.Render("▶ ")
-		}
-		row := fmt.Sprintf("%s%-50s  %7d  %7d  %-12s  %s",
-			prefix,
-			utils.Truncate(f.Path, 50),
-			f.CommitCount,
-			f.UniqueAuthors,
+	startIdx := m.scrollOffset
+	endIdx := startIdx + visibleRows
+	if endIdx > len(top) {
+		endIdx = len(top)
+	}
+	selectedInView := m.cursor - m.scrollOffset
+
+	rows := make([][]string, 0, endIdx-startIdx)
+	for i := startIdx; i < endIdx; i++ {
+		f := top[i]
+		bar := utils.Heatmap(f.CommitCount, maxCommits, 25)
+		rows = append(rows, []string{
+			f.Path,
+			fmt.Sprintf("%d", f.CommitCount),
+			fmt.Sprintf("%d", f.UniqueAuthors),
 			utils.TimeAgo(f.LastModified),
 			bar,
-		)
-		if i == m.cursor {
-			sb.WriteString(styleSelected.Render(row) + "\n")
-		} else {
-			sb.WriteString(row + "\n")
-		}
+		})
 	}
-	return sb.String()
+
+	return "\n" + m.newTable(selectedInView, []string{"File", "Commits", "Authors", "Last Modified", "Churn"}, rows)
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────
@@ -1067,7 +974,6 @@ func (m Model) renderActivity() string {
 
 	daily := m.result.DailyActivity
 
-	// Build date → count map
 	dayMap := make(map[string]int)
 	maxCount := 0
 	for _, d := range daily {
@@ -1079,10 +985,10 @@ func (m Model) renderActivity() string {
 	}
 
 	now := time.Now()
-	todayWeekday := int(now.Weekday()) // 0 = Sunday
+	todayWeekday := int(now.Weekday())
 
-	const cellWidth = 2  // each cell: "█ " or "░ "
-	const labelWidth = 4 // day label + space + indent
+	const cellWidth = 2
+	const labelWidth = 4
 	numWeeks := (m.panelWidth() - labelWidth) / cellWidth
 	if numWeeks > 52 {
 		numWeeks = 52
@@ -1091,7 +997,6 @@ func (m Model) renderActivity() string {
 		numWeeks = 4
 	}
 
-	// Sunday that opens the oldest visible week
 	currentWeekSunday := now.AddDate(0, 0, -todayWeekday)
 	startSunday := currentWeekSunday.AddDate(0, 0, -(numWeeks-1)*7)
 
@@ -1114,7 +1019,6 @@ func (m Model) renderActivity() string {
 	sb.WriteString("    " + styleLabel.Render(string(monthBuf)) + "\n")
 
 	// ── 7-row × numWeeks-col calendar grid ────────────────────────────────────
-	// Show label on Mon (1), Wed (3), Fri (5); blank on others to match GitHub.
 	dayAbbrev := [7]string{"S", " ", "T", " ", "T", " ", "S"}
 	for row := 0; row < 7; row++ {
 		sb.WriteString("  ")
@@ -1122,7 +1026,7 @@ func (m Model) renderActivity() string {
 		for w := 0; w < numWeeks; w++ {
 			date := startSunday.AddDate(0, 0, w*7+row)
 			if date.After(now) {
-				sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#21262d")).Render("░ "))
+				sb.WriteString(lipgloss.NewStyle().Foreground(calendarEmpty).Render("░ "))
 				continue
 			}
 			key := date.Format("2006-01-02")
@@ -1147,59 +1051,63 @@ func (m Model) renderActivity() string {
 	}
 	sb.WriteString("\n")
 	sb.WriteString(stylePrimary.Render("  Contributors") + "\n")
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-30s  %8s  %7s  %s\n", "Name", "Commits", "Share", "Bar")))
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
 	total := 0
 	for _, c := range contribs {
 		total += c.Count
 	}
-	visibleRows := m.bodyHeight() - 14
-	if visibleRows < 5 {
-		visibleRows = 5
+
+	// calendar(~12) + legend(2) + blank(1) + title(1) + table header(2) = ~18 overhead
+	visibleRows := m.bodyHeight() - 18
+	if visibleRows < 3 {
+		visibleRows = 3
 	}
-	for i, c := range contribs {
-		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
-			continue
-		}
+
+	startIdx := m.scrollOffset
+	endIdx := startIdx + visibleRows
+	if endIdx > len(contribs) {
+		endIdx = len(contribs)
+	}
+	selectedInView := m.cursor - m.scrollOffset
+
+	rows := make([][]string, 0, endIdx-startIdx)
+	for i := startIdx; i < endIdx; i++ {
+		c := contribs[i]
 		pct := 0.0
 		if total > 0 {
 			pct = float64(c.Count) / float64(total) * 100
 		}
 		bar := utils.Heatmap(c.Count, contribs[0].Count, 20)
-		prefix := "  "
-		if i == m.cursor {
-			prefix = styleAccent.Render("▶ ")
-		}
-		row := fmt.Sprintf("%s%-30s  %8d  %6.1f%%  %s", prefix, utils.Truncate(c.Name, 30), c.Count, pct, bar)
-		if i == m.cursor {
-			sb.WriteString(styleSelected.Render(row) + "\n")
-		} else {
-			sb.WriteString(row + "\n")
-		}
+		rows = append(rows, []string{
+			c.Name,
+			fmt.Sprintf("%d", c.Count),
+			fmt.Sprintf("%.1f%%", pct),
+			bar,
+		})
 	}
+
+	sb.WriteString(m.newTable(selectedInView, []string{"Name", "Commits", "Share", "Bar"}, rows))
 	return sb.String()
 }
 
-// calendarCell returns a styled 2-char cell matching GitHub's contribution palette.
+// calendarCell returns a styled 2-char cell using adaptive theme colors.
 func calendarCell(count, max int) string {
 	if count == 0 || max == 0 {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#21262d")).Render("░ ")
+		return lipgloss.NewStyle().Foreground(calendarEmpty).Render("░ ")
 	}
 	ratio := float64(count) / float64(max)
-	var color string
+	var idx int
 	switch {
 	case ratio <= 0.25:
-		color = "#0e4429"
+		idx = 0
 	case ratio <= 0.50:
-		color = "#006d32"
+		idx = 1
 	case ratio <= 0.75:
-		color = "#26a641"
+		idx = 2
 	default:
-		color = "#39d353"
+		idx = 3
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("█ ")
+	return lipgloss.NewStyle().Foreground(calendarLevels[idx]).Render("█ ")
 }
 
 // ── Todos ────────────────────────────────────────────────────────────────────
@@ -1209,17 +1117,18 @@ func (m Model) renderTodos() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
 
+	// Badge summary row
 	sb.WriteString("  ")
 	for _, kw := range []string{"TODO", "FIXME", "HACK", "XXX"} {
 		count := summary.CountByKind[kw]
 		var style lipgloss.Style
 		switch kw {
 		case "FIXME":
-			style = lipgloss.NewStyle().Foreground(colorWhite).Background(lipgloss.Color("#f54242")).Bold(true).Padding(0, 1)
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(colorRed).Bold(true).Padding(0, 1)
 		case "HACK":
-			style = lipgloss.NewStyle().Foreground(colorWhite).Background(lipgloss.Color("#b0ad09")).Bold(true).Padding(0, 1)
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(colorYellow).Bold(true).Padding(0, 1)
 		default:
-			style = lipgloss.NewStyle().Foreground(colorWhite).Background(lipgloss.Color("#636363")).Bold(true).Padding(0, 1)
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(colorGray).Bold(true).Padding(0, 1)
 		}
 		sb.WriteString(style.Render(fmt.Sprintf("%s %d", kw, count)) + "  ")
 	}
@@ -1237,43 +1146,31 @@ func (m Model) renderTodos() string {
 		return sb.String()
 	}
 
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-5s  %-6s  %-45s  %s\n", "Line", "Kind", "File", "Text")))
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
+	// 1 blank + 1 badge row + 1 blank = 3 overhead; table header+sep = 2
+	visibleRows := m.bodyHeight() - m.searchBarHeight() - 5
+	if visibleRows < 3 {
+		visibleRows = 3
+	}
 
-	visibleRows := m.bodyHeight() - m.searchBarHeight()
-	if visibleRows < 5 {
-		visibleRows = 5
+	startIdx := m.scrollOffset
+	endIdx := startIdx + visibleRows
+	if endIdx > len(items) {
+		endIdx = len(items)
 	}
-	for i, item := range items {
-		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
-			continue
-		}
-		var kindStyle lipgloss.Style
-		switch item.Kind {
-		case "FIXME":
-			kindStyle = styleDanger
-		case "HACK", "XXX":
-			kindStyle = styleWarning
-		default:
-			kindStyle = styleLabel
-		}
-		prefix := "  "
-		if i == m.cursor {
-			prefix = styleAccent.Render("▶ ")
-		}
-		row := fmt.Sprintf("%s%-5d  %s  %-45s  %s",
-			prefix,
-			item.Line,
-			kindStyle.Render(utils.PadRight(item.Kind, 6)),
-			utils.Truncate(item.File, 45),
-			utils.Truncate(item.Text, m.panelWidth()-70),
-		)
-		if i == m.cursor {
-			sb.WriteString(styleSelected.Render(row) + "\n")
-		} else {
-			sb.WriteString(row + "\n")
-		}
+	selectedInView := m.cursor - m.scrollOffset
+
+	rows := make([][]string, 0, endIdx-startIdx)
+	for i := startIdx; i < endIdx; i++ {
+		item := items[i]
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", item.Line),
+			item.Kind,
+			item.File,
+			utils.Truncate(item.Text, m.panelWidth()-80),
+		})
 	}
+
+	sb.WriteString(m.newTable(selectedInView, []string{"Line", "Kind", "File", "Text"}, rows))
 	return sb.String()
 }
 
@@ -1289,48 +1186,44 @@ func (m Model) renderStale() string {
 	}
 
 	now := time.Now()
-	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %-50s  %-14s  %7s  %s\n",
-		"File", "Last Modified", "Commits", "Dormant")))
-	sb.WriteString(styleDim.Render("  " + strings.Repeat("─", m.panelWidth()-4) + "\n"))
 
-	visibleRows := m.bodyHeight() - 4 - m.searchBarHeight()
+	// 1 blank + table header(2) + footer(1) = 4 overhead
+	visibleRows := m.bodyHeight() - m.searchBarHeight() - 4
 	if visibleRows < 3 {
 		visibleRows = 3
 	}
 
-	for i, f := range items {
-		if i < m.scrollOffset || i >= m.scrollOffset+visibleRows {
-			continue
-		}
+	startIdx := m.scrollOffset
+	endIdx := startIdx + visibleRows
+	if endIdx > len(items) {
+		endIdx = len(items)
+	}
+	selectedInView := m.cursor - m.scrollOffset
+
+	rows := make([][]string, 0, endIdx-startIdx)
+	for i := startIdx; i < endIdx; i++ {
+		f := items[i]
 		days := int(now.Sub(f.LastModified).Hours() / 24)
-		var dormantStyle lipgloss.Style
+		var dormant string
 		switch {
 		case days > 365:
-			dormantStyle = styleDanger
+			dormant = styleDanger.Render(fmt.Sprintf("%d days", days))
 		case days > 180:
-			dormantStyle = styleWarning
+			dormant = styleWarning.Render(fmt.Sprintf("%d days", days))
 		default:
-			dormantStyle = styleSuccess
+			dormant = styleSuccess.Render(fmt.Sprintf("%d days", days))
 		}
-		prefix := "  "
-		if i == m.cursor {
-			prefix = styleAccent.Render("▶ ")
-		}
-		row := fmt.Sprintf("%s%-50s  %-14s  %7d  %s",
-			prefix,
-			utils.Truncate(f.Path, 50),
+		rows = append(rows, []string{
+			f.Path,
 			f.LastModified.Format("2006-01-02"),
-			f.CommitCount,
-			dormantStyle.Render(fmt.Sprintf("%d days", days)),
-		)
-		if i == m.cursor {
-			sb.WriteString(styleSelected.Render(row) + "\n")
-		} else {
-			sb.WriteString(row + "\n")
-		}
+			fmt.Sprintf("%d", f.CommitCount),
+			dormant,
+		})
 	}
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(m.newTable(selectedInView, []string{"File", "Last Modified", "Commits", "Dormant"}, rows))
 	sb.WriteString(styleDim.Render("\n  Files sorted by oldest last-modified — potential dead code.\n"))
 	return sb.String()
 }
