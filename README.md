@@ -9,6 +9,7 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Built with Bubble Tea](https://img.shields.io/badge/Built%20with-Bubble%20Tea-ff69b4)](https://github.com/charmbracelet/bubbletea)
+[![Latest Release](https://img.shields.io/github/v/release/connerluzier/repoview)](https://github.com/connerluzier/repoview/releases)
 
 </div>
 
@@ -19,9 +20,9 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 | Tab | What you get |
 |-----|-------------|
 | **Overview** | Repo name, path, total commits, contributors, branches, tags, size, and latest commit |
-| **Churn** | Files ranked by raw commit count with heatmap bars, author counts, and last-modified timestamps |
+| **Churn** | Files ranked by commit count with heatmap bars, author counts, and last-modified timestamps |
 | **Activity** | 52-week contribution calendar + contributor leaderboard with commit share |
-| **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with badge summary |
+| **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with a badge summary |
 | **Stale** | Files sorted by oldest last-modified — useful for spotting dead code |
 
 > Works with **local paths** and **remote GitHub URLs**. Remote repos are shallow-cloned (last 200 commits) to a temp directory and cleaned up automatically on exit. Commit history, churn counts, and activity data will reflect only those commits for large repositories.
@@ -57,7 +58,8 @@ go build -o repoview .
 ## 📖 Usage
 
 ```bash
-repoview
+repoview                 # launch the TUI
+repoview --version       # print version and exit
 ```
 
 On launch, enter a local path or GitHub URL and press **Enter**:
@@ -85,7 +87,7 @@ Paths starting with `~` are expanded to your home directory on all platforms.
 | `Esc` | Clear filter → back to input screen |
 | `q` / `Ctrl+C` | Quit |
 
-### Within list tabs (Churn, Activity, Todos, Stale)
+### Within list tabs (Churn, Todos, Stale)
 
 | Key | Action |
 |-----|--------|
@@ -104,15 +106,25 @@ Paths starting with `~` are expanded to your home directory on all platforms.
 
 ---
 
-## File Viewer
+## 🗂 Project Structure
 
-Pressing `o` or `Enter` on any file opens it in a full-screen viewport inside the TUI — no external editor required. Files are displayed with line numbers. On the **Todos** tab the viewer scrolls directly to the relevant line.
-
----
-
-## Pagination
-
-Long lists are paginated automatically based on your terminal height. The current page and total pages are shown below each table (`page 1 / 4`). Navigate between pages by moving the cursor past the top or bottom of the current page.
+```
+repoview/
+├── main.go                        # Entry point — version flag + Bubble Tea bootstrap
+└── internal/
+    ├── git_analysis/
+    │   └── analysis.go            # All repository data gathering (go-git + exec git)
+    ├── metrics/
+    │   └── metrics.go             # Risk scoring and TODO/FIXME scanner
+    ├── utils/
+    │   └── utils.go               # Shared formatting helpers (bytes, time, truncate)
+    └── tui/
+        ├── styles.go              # Palette and every lipgloss style — retheme here
+        ├── helpers.go             # Blob animation, path utils, cloneRepo, runAnalysis
+        ├── model.go               # Model struct, New(), Init(), Update(), state helpers
+        ├── view.go                # View(), screen renderers, newTable()
+        └── tabs.go                # One render function per tab
+```
 
 ---
 
@@ -121,13 +133,13 @@ Long lists are paginated automatically based on your terminal height. The curren
 - [**Bubble Tea**](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner, paginator, viewport)
 - [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling and layout
-- [**go-git**](https://github.com/go-git/go-git) — pure Go Git implementation
+- [**go-git**](https://github.com/go-git/go-git) — pure Go Git implementation (root detection, cloning)
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome. Feel free to open an issue or submit a pull request.
+Contributions, issues, and feature requests are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for a guide to the codebase and how to get started.
 
 ---
 
