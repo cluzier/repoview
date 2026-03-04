@@ -52,15 +52,6 @@ func Truncate(s string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
-// PadRight pads s to width with spaces on the right.
-func PadRight(s string, width int) string {
-	runes := []rune(s)
-	if len(runes) >= width {
-		return string(runes[:width])
-	}
-	return s + strings.Repeat(" ", width-len(runes))
-}
-
 // Heatmap renders a simple ASCII bar from 0..max.
 func Heatmap(value, max int, width int) string {
 	if max == 0 {

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // CommitInfo holds metadata for the most recent commit.
@@ -94,7 +93,7 @@ func Analyze(repoPath string) AnalysisResult {
 	// 1. Overview stats via go-git (fast - just references)
 	go func() {
 		defer wg.Done()
-		stats := computeOverviewStats(repo, rootPath)
+		stats := computeOverviewStats(rootPath)
 		mu.Lock()
 		result.Stats.TotalCommits = stats.TotalCommits
 		result.Stats.TotalContributors = stats.TotalContributors
@@ -145,13 +144,13 @@ func Analyze(repoPath string) AnalysisResult {
 	})
 	result.StaleFiles = staleFiles
 
-	result.Stats.RepoSizeBytes = repoSize(repo, rootPath)
+	result.Stats.RepoSizeBytes = repoSize(rootPath)
 
 	return result
 }
 
 // computeOverviewStats gathers commit count, contributors, branches, tags, and latest commit.
-func computeOverviewStats(repo *git.Repository, rootPath string) RepoStats {
+func computeOverviewStats(rootPath string) RepoStats {
 	var stats RepoStats
 
 	// Commit count + contributors via git shortlog (very fast)
@@ -193,12 +192,14 @@ func computeOverviewStats(repo *git.Repository, rootPath string) RepoStats {
 	}
 
 	// Tags
-	tagIter, err := repo.Tags()
+	out, err = runGit(rootPath, "tag", "--list")
 	if err == nil {
-		_ = tagIter.ForEach(func(_ *plumbing.Reference) error {
-			stats.TotalTags++
-			return nil
-		})
+		scanner := bufio.NewScanner(strings.NewReader(out))
+		for scanner.Scan() {
+			if strings.TrimSpace(scanner.Text()) != "" {
+				stats.TotalTags++
+			}
+		}
 	}
 
 	// Latest commit
@@ -354,16 +355,8 @@ func computeContributors(rootPath string) []ContributorActivity {
 	return result
 }
 
-// repoSize estimates the repo size, falling back to walking the .git directory.
-func repoSize(repo *git.Repository, rootPath string) int64 {
-	storer := repo.Storer
-	if sizer, ok := storer.(interface{ ObjectStorageSize() (uint64, error) }); ok {
-		n, err := sizer.ObjectStorageSize()
-		if err == nil && n > 0 {
-			return int64(n)
-		}
-	}
-	// Fallback: walk .git directory and sum file sizes
+// repoSize estimates the repository size by walking the .git directory.
+func repoSize(rootPath string) int64 {
 	var total int64
 	gitDir := filepath.Join(rootPath, ".git")
 	_ = filepath.WalkDir(gitDir, func(_ string, d os.DirEntry, err error) error {

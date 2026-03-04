@@ -24,7 +24,7 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 | **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with badge summary |
 | **Stale** | Files sorted by oldest last-modified — useful for spotting dead code |
 
-> Works with **local paths** and **remote GitHub URLs**. Remote repos are cloned to a temp directory and cleaned up automatically on exit.
+> Works with **local paths** and **remote GitHub URLs**. Remote repos are shallow-cloned (last 200 commits) to a temp directory and cleaned up automatically on exit. Commit history, churn counts, and activity data will reflect only those commits for large repositories.
 
 ---
 
@@ -49,7 +49,7 @@ go build -o repoview .
 
 ## 🛠 Requirements
 
-- **Go 1.21+**
+- **Go 1.24+**
 - **`git`** on your `PATH`
 
 ---
