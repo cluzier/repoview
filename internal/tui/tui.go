@@ -2,7 +2,9 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +12,10 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/paginator"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	ltable "github.com/charmbracelet/lipgloss/table"
@@ -119,9 +123,10 @@ var banner = `
 type appState int
 
 const (
-	stateInput    appState = iota
+	stateInput   appState = iota
 	stateLoading
 	stateMain
+	stateViewer
 )
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -137,7 +142,7 @@ const (
 	tabCount
 )
 
-var tabNames = [tabCount]string{"  Overview  ", "  Churn  ", "  Activity  ", "  Todos  ", "  Stale  "}
+var tabNames = [tabCount]string{"   Overview   ", "   Churn   ", "   Activity   ", "   Todos   ", "   Stale   "}
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
@@ -155,6 +160,7 @@ type RefreshMsg struct{}
 
 type editorClosedMsg struct{ err error }
 type flashClearMsg struct{}
+type blobTickMsg struct{}
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -165,17 +171,21 @@ type Model struct {
 	loadingMsg string
 	tmpDir     string
 	inputErr   string
+	blobT      float64
 
-	repoPath    string
-	activeTab   Tab
-	loading     bool
-	err         error
-	result      git_analysis.AnalysisResult
-	todos       metrics.TodoSummary
-	cursor      int
-	width       int
-	height      int
-	scrollOffset int
+	repoPath  string
+	activeTab Tab
+	loading   bool
+	err       error
+	result    git_analysis.AnalysisResult
+	todos     metrics.TodoSummary
+	cursor    int
+	width     int
+	height    int
+	page      paginator.Model
+
+	viewer      viewport.Model
+	viewerTitle string
 
 	searchMode  bool
 	searchQuery string
@@ -202,11 +212,17 @@ func New() Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(cPrimary)
 
+	pg := paginator.New()
+	pg.Type = paginator.Arabic
+	pg.ArabicFormat = "  page %d / %d"
+	pg.PerPage = 10 // recalculated on first render
+
 	return Model{
 		state:       stateInput,
 		input:       ti,
 		spinner:     sp,
 		searchInput: si,
+		page:        pg,
 	}
 }
 
@@ -222,11 +238,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.state == stateViewer {
+			m.viewer.Width = msg.Width
+			m.viewer.Height = msg.Height - 3
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case blobTickMsg:
+		if m.state == stateLoading {
+			m.blobT += 0.07
+			return m, blobTick()
+		}
 
 	case cloneDoneMsg:
 		if msg.err != nil {
@@ -236,7 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tmpDir = msg.path
 		m.loadingMsg = "Analyzing repository…"
-		return m, runAnalysis(msg.path)
+		return m, tea.Batch(runAnalysis(msg.path), blobTick())
 
 	case AnalysisDoneMsg:
 		m.loading = false
@@ -245,7 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.todos = msg.Todos
 		m.err = msg.Result.Error
 		m.cursor = 0
-		m.scrollOffset = 0
+		m.page.Page = 0
 
 	case editorClosedMsg:
 		// no-op: just resume the TUI after the editor exits
@@ -256,7 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RefreshMsg:
 		m.loading = true
 		m.cursor = 0
-		m.scrollOffset = 0
+		m.page.Page = 0
 		return m, runAnalysis(m.repoPath)
 
 	case tea.KeyMsg:
@@ -265,6 +291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInput(msg)
 		case stateMain:
 			return m.updateMain(msg)
+		case stateViewer:
+			return m.updateViewer(msg)
 		}
 	}
 
@@ -288,7 +316,7 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateLoading
 		if isRemoteURL(raw) {
 			m.loadingMsg = "Cloning repository…"
-			return m, cloneRepo(raw)
+			return m, tea.Batch(cloneRepo(raw), blobTick())
 		}
 		expanded, err := expandPath(raw)
 		if err != nil {
@@ -304,7 +332,7 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.repoPath = abs
 		m.loadingMsg = "Analyzing repository…"
-		return m, runAnalysis(abs)
+		return m, tea.Batch(runAnalysis(abs), blobTick())
 
 	case tea.KeyCtrlC, tea.KeyEsc:
 		return m, tea.Quit
@@ -324,7 +352,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
 			m.cursor = 0
-			m.scrollOffset = 0
+			m.page.Page = 0
 			return m, nil
 		case tea.KeyEnter:
 			m.searchMode = false
@@ -334,7 +362,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchInput, cmd = m.searchInput.Update(msg)
 			m.searchQuery = m.searchInput.Value()
 			m.cursor = 0
-			m.scrollOffset = 0
+			m.page.Page = 0
 			return m, cmd
 		}
 	}
@@ -347,15 +375,13 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "backspace", "esc":
-		// If a filter is active, clear it first
 		if m.searchQuery != "" {
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
 			m.cursor = 0
-			m.scrollOffset = 0
+			m.page.Page = 0
 			return m, nil
 		}
-		// go back to input screen
 		if m.tmpDir != "" {
 			os.RemoveAll(m.tmpDir)
 			m.tmpDir = ""
@@ -370,7 +396,6 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case "/":
-		// Enter search mode on applicable tabs
 		switch m.activeTab {
 		case TabChurn, TabTodos, TabStale:
 			m.searchMode = true
@@ -386,7 +411,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeTab > 0 {
 			m.activeTab--
 			m.cursor = 0
-			m.scrollOffset = 0
+			m.page.Page = 0
 			m.searchMode = false
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
@@ -396,7 +421,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeTab < tabCount-1 {
 			m.activeTab++
 			m.cursor = 0
-			m.scrollOffset = 0
+			m.page.Page = 0
 			m.searchMode = false
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
@@ -415,7 +440,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "g":
 		m.cursor = 0
-		m.scrollOffset = 0
+		m.page.Page = 0
 
 	case "G":
 		m.cursor = m.listLen() - 1
@@ -425,38 +450,35 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.activeTab = (m.activeTab + 1) % tabCount
 		m.cursor = 0
-		m.scrollOffset = 0
+		m.page.Page = 0
 		m.searchMode = false
 		m.searchQuery = ""
 		m.searchInput.SetValue("")
 
 	case "enter", "o":
-		// Open current file in $EDITOR
 		path := m.currentFilePath()
 		if path == "" {
 			return m, nil
 		}
 		fullPath := filepath.Join(m.repoPath, path)
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = os.Getenv("VISUAL")
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			m.flashMsg = "✖ Cannot read file: " + err.Error()
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return flashClearMsg{} })
 		}
-		if editor == "" {
-			editor = "vi"
+		numbered := addLineNumbers(string(content))
+		vp := viewport.New(m.width, m.height-3)
+		vp.Style = lipgloss.NewStyle().Foreground(colorText)
+		vp.SetContent(numbered)
+		if line := m.currentFileLine(); line > 1 {
+			vp.SetYOffset(line - 2)
 		}
-		var cmd *exec.Cmd
-		line := m.currentFileLine()
-		if line > 0 {
-			cmd = exec.Command(editor, fmt.Sprintf("+%d", line), fullPath)
-		} else {
-			cmd = exec.Command(editor, fullPath)
-		}
-		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return editorClosedMsg{err: err}
-		})
+		m.viewer = vp
+		m.viewerTitle = path
+		m.state = stateViewer
+		return m, nil
 
 	case "y":
-		// Copy file path to clipboard
 		path := m.currentFilePath()
 		if path == "" {
 			return m, nil
@@ -476,6 +498,75 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+func blobTick() tea.Cmd {
+	return tea.Tick(55*time.Millisecond, func(time.Time) tea.Msg { return blobTickMsg{} })
+}
+
+var blobGrad = []rune{' ', '·', '░', '▒', '▓', '█'}
+
+// renderBlob draws a dithered 3-D blob at the given character dimensions.
+// t is the animation time parameter (incremented each tick).
+func renderBlob(t float64, w, h int) string {
+	cx := float64(w-1) / 2.0
+	cy := float64(h-1) / 2.0
+	r := math.Min(float64(w)*0.42, float64(h)*0.88)
+	var sb strings.Builder
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			// Aspect-corrected normalised coords
+			nx := (float64(col) - cx) / r
+			ny := (float64(row) - cy) * 2.1 / r
+			d := math.Sqrt(nx*nx + ny*ny)
+			if d < 1e-9 {
+				d = 1e-9
+			}
+
+			// Animated surface wobble
+			angle := math.Atan2(ny, nx)
+			wobble := math.Sin(angle*3+t*1.8)*0.10 +
+				math.Cos(angle*5-t*1.2)*0.06 +
+				math.Sin(angle*7+t*2.5)*0.03
+			surface := 1.0 + wobble
+			inside := surface - d
+			if inside <= 0 {
+				sb.WriteRune(' ')
+				continue
+			}
+
+			// Sphere normal at this surface point
+			snx := nx / surface
+			sny := ny / surface
+			snz := math.Sqrt(math.Max(0, 1-snx*snx-sny*sny*0.25))
+			snn := math.Sqrt(snx*snx + sny*sny + snz*snz)
+			snx /= snn; sny /= snn; snz /= snn
+
+			// Slowly orbiting directional light
+			lx := -math.Cos(t*0.3) * 0.6
+			ly := -0.5
+			lz := math.Sin(t*0.3)*0.3 + 0.7
+			ln := math.Sqrt(lx*lx + ly*ly + lz*lz)
+			lx /= ln; ly /= ln; lz /= ln
+
+			diffuse := math.Max(0, snx*lx+sny*ly+snz*lz)
+			specular := math.Pow(math.Max(0, snz*lz+snx*lx), 10) * 0.5
+			intensity := diffuse*0.75 + specular + 0.08
+			// Soft edge fade
+			intensity *= math.Min(1.0, inside/0.10)
+			intensity = math.Max(0, math.Min(1, intensity))
+
+			idx := int(intensity*float64(len(blobGrad)-1) + 0.5)
+			if idx >= len(blobGrad) {
+				idx = len(blobGrad) - 1
+			}
+			sb.WriteRune(blobGrad[idx])
+		}
+		if row < h-1 {
+			sb.WriteRune('\n')
+		}
+	}
+	return sb.String()
+}
+
 // expandPath expands a leading ~ to the user's home directory.
 func expandPath(p string) (string, error) {
 	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
@@ -490,6 +581,30 @@ func expandPath(p string) (string, error) {
 
 func isRemoteURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "git@")
+}
+
+// addLineNumbers prepends right-aligned line numbers to each line of content.
+func addLineNumbers(content string) string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	var sb strings.Builder
+	lineNum := 1
+	for scanner.Scan() {
+		fmt.Fprintf(&sb, "%5d  %s\n", lineNum, scanner.Text())
+		lineNum++
+	}
+	return sb.String()
+}
+
+// updateViewer handles key events while a file is open in the viewport.
+func (m Model) updateViewer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.state = stateMain
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.viewer, cmd = m.viewer.Update(msg)
+	return m, cmd
 }
 
 func cloneRepo(url string) tea.Cmd {
@@ -544,13 +659,39 @@ func (m *Model) clampCursor() {
 }
 
 func (m *Model) clampScroll() {
-	visibleRows := m.bodyHeight()
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
+	perPage := m.visibleRows()
+	if perPage < 1 {
+		perPage = 1
 	}
-	if m.cursor >= m.scrollOffset+visibleRows {
-		m.scrollOffset = m.cursor - visibleRows + 1
+	m.page.PerPage = perPage
+	m.page.SetTotalPages(m.listLen())
+	m.page.Page = m.cursor / perPage
+}
+
+// visibleRows returns the number of list rows actually rendered for the
+// active tab — matching the overhead each renderer subtracts from bodyHeight.
+func (m Model) visibleRows() int {
+	var n int
+	switch m.activeTab {
+	case TabChurn:
+		// 2 blank + top border + header + sep + bottom border + 2 blank + page = 8
+		n = m.bodyHeight() - m.searchBarHeight() - 8
+	case TabActivity:
+		// calendar+legend+spacing(~20) + border top + bottom + 2 blank + page = 24
+		n = m.bodyHeight() - 24
+	case TabTodos:
+		// 2 blank + badges + 3 blank + top border + header + sep + bottom border + 2 blank + page = 12
+		n = m.bodyHeight() - m.searchBarHeight() - 12
+	case TabStale:
+		// 2 blank + top border + header + sep + bottom border + 2 blank + footer + page = 9
+		n = m.bodyHeight() - m.searchBarHeight() - 9
+	default:
+		n = m.bodyHeight()
 	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // panelWidth is the usable content width (full terminal width).
@@ -686,6 +827,8 @@ func (m Model) View() string {
 		return m.viewInput()
 	case stateLoading:
 		return m.viewLoading()
+	case stateViewer:
+		return m.viewViewer()
 	default:
 		return m.viewMain()
 	}
@@ -731,11 +874,38 @@ func (m Model) viewInput() string {
 // ── Loading screen ───────────────────────────────────────────────────────────
 
 func (m Model) viewLoading() string {
-	msg := lipgloss.JoinHorizontal(lipgloss.Center,
+	blob := lipgloss.NewStyle().Foreground(cPrimary).Render(renderBlob(m.blobT, 36, 15))
+	label := lipgloss.JoinHorizontal(lipgloss.Center,
 		m.spinner.View()+" ",
 		styleValue.Render(m.loadingMsg),
 	)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg)
+	content := lipgloss.JoinVertical(lipgloss.Center, blob, "", label)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+// ── File viewer ───────────────────────────────────────────────────────────────
+
+func (m Model) viewViewer() string {
+	titleStyle := lipgloss.NewStyle().
+		Foreground(colorFg).Bold(true).
+		Background(lipgloss.Color("#0369a1")).
+		Padding(0, 2).
+		Width(m.width)
+	header := titleStyle.Render("  " + m.viewerTitle)
+
+	pct := int(m.viewer.ScrollPercent() * 100)
+	footerStyle := lipgloss.NewStyle().
+		Foreground(colorText).
+		Background(lipgloss.Color("#0c1e2c")).
+		Width(m.width).Padding(0, 1)
+	hints := styleDim.Render("↑/↓ scroll  PgUp/PgDn  q/Esc close")
+	scrollPct := styleAccent.Render(fmt.Sprintf("%d%%", pct))
+	footer := footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(m.width-10).Render(hints),
+		scrollPct,
+	))
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, m.viewer.View(), footer)
 }
 
 // ── Main view ─────────────────────────────────────────────────────────────────
@@ -861,15 +1031,17 @@ func (m Model) renderOverview() string {
 
 	kv := func(icon, label, value string) string {
 		ic := styleDim.Render(icon)
-		lb := styleLabel.Render(utils.PadRight(label, 20))
+		lb := styleLabel.Render(utils.PadRight(label, 24))
 		vl := styleValue.Render(value)
-		return "  " + ic + "  " + lb + vl
+		return "    " + ic + "   " + lb + vl
 	}
 
 	lines := []string{
 		"",
+		"",
 		kv("📁", "Repository", s.RepoName),
-		kv("📍", "Path", utils.Truncate(s.RepoPath, pw-30)),
+		kv("📍", "Path", utils.Truncate(s.RepoPath, pw-34)),
+		"",
 		"",
 		kv("📝", "Total Commits", fmt.Sprintf("%d", s.TotalCommits)),
 		kv("👥", "Contributors", fmt.Sprintf("%d", s.TotalContributors)),
@@ -880,12 +1052,12 @@ func (m Model) renderOverview() string {
 
 	if s.LatestCommit != nil {
 		lc := s.LatestCommit
-		divider := "  " + styleDim.Render(strings.Repeat("─", pw-4))
-		lines = append(lines, "", divider,
+		divider := "    " + styleDim.Render(strings.Repeat("─", pw-8))
+		lines = append(lines, "", "", divider, "",
 			kv("🔖", "Hash", lc.Hash),
 			kv("✍️ ", "Author", lc.Author),
 			kv("🕐", "When", utils.TimeAgo(lc.When)),
-			kv("💬", "Message", utils.Truncate(lc.Message, pw-30)),
+			kv("💬", "Message", utils.Truncate(lc.Message, pw-34)),
 		)
 	}
 	return strings.Join(lines, "\n")
@@ -896,9 +1068,13 @@ func (m Model) renderOverview() string {
 // newTable builds a lipgloss table with consistent app-wide styling.
 // selectedInView is the cursor's 0-based position within the visible window.
 func (m Model) newTable(selectedInView int, headers []string, rows [][]string) string {
-	cellStyle := lipgloss.NewStyle().Foreground(colorText).PaddingLeft(1).PaddingRight(1)
-	headerStyle := lipgloss.NewStyle().Foreground(colorGray).PaddingLeft(1).PaddingRight(1)
-	selectedStyle := lipgloss.NewStyle().Foreground(colorBlue).Bold(true).PaddingLeft(1).PaddingRight(1)
+	inner := m.panelWidth() - 2 // 2 chars reserved for left/right border
+	if inner < 10 {
+		inner = 10
+	}
+	cellStyle := lipgloss.NewStyle().Foreground(colorText).Padding(0, 2)
+	headerStyle := lipgloss.NewStyle().Foreground(colorGray).Padding(0, 2)
+	selectedStyle := lipgloss.NewStyle().Foreground(colorBlue).Bold(true).Padding(0, 2)
 
 	t := ltable.New().
 		Border(lipgloss.NormalBorder()).
@@ -909,7 +1085,7 @@ func (m Model) newTable(selectedInView int, headers []string, rows [][]string) s
 		BorderColumn(false).
 		BorderHeader(true).
 		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
-		Width(m.panelWidth()).
+		Width(inner).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if row == ltable.HeaderRow {
 				return headerStyle
@@ -921,7 +1097,12 @@ func (m Model) newTable(selectedInView int, headers []string, rows [][]string) s
 		}).
 		Headers(headers...).
 		Rows(rows...)
-	return t.Render()
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorSubtle).
+		Width(inner).
+		Render(t.Render())
 }
 
 // ── Churn ─────────────────────────────────────────────────────────────────────
@@ -936,18 +1117,8 @@ func (m Model) renderChurn() string {
 	}
 	maxCommits := top[0].CommitCount
 
-	// 1 blank line + table header(1) + separator(1) = 3 overhead
-	visibleRows := m.bodyHeight() - m.searchBarHeight() - 3
-	if visibleRows < 3 {
-		visibleRows = 3
-	}
-
-	startIdx := m.scrollOffset
-	endIdx := startIdx + visibleRows
-	if endIdx > len(top) {
-		endIdx = len(top)
-	}
-	selectedInView := m.cursor - m.scrollOffset
+	startIdx, endIdx := m.page.GetSliceBounds(len(top))
+	selectedInView := m.cursor - startIdx
 
 	rows := make([][]string, 0, endIdx-startIdx)
 	for i := startIdx; i < endIdx; i++ {
@@ -962,7 +1133,8 @@ func (m Model) renderChurn() string {
 		})
 	}
 
-	return "\n" + m.newTable(selectedInView, []string{"File", "Commits", "Authors", "Last Modified", "Churn"}, rows)
+	table := m.newTable(selectedInView, []string{"File", "Commits", "Authors", "Last Modified", "Churn"}, rows)
+	return "\n\n" + table + "\n\n" + styleLabel.Render(m.page.View())
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────
@@ -1049,8 +1221,8 @@ func (m Model) renderActivity() string {
 	if len(contribs) == 0 {
 		return sb.String()
 	}
-	sb.WriteString("\n")
-	sb.WriteString(stylePrimary.Render("  Contributors") + "\n")
+	sb.WriteString("\n\n")
+	sb.WriteString(stylePrimary.Render("  Contributors") + "\n\n")
 
 	total := 0
 	for _, c := range contribs {
@@ -1058,17 +1230,8 @@ func (m Model) renderActivity() string {
 	}
 
 	// calendar(~12) + legend(2) + blank(1) + title(1) + table header(2) = ~18 overhead
-	visibleRows := m.bodyHeight() - 18
-	if visibleRows < 3 {
-		visibleRows = 3
-	}
-
-	startIdx := m.scrollOffset
-	endIdx := startIdx + visibleRows
-	if endIdx > len(contribs) {
-		endIdx = len(contribs)
-	}
-	selectedInView := m.cursor - m.scrollOffset
+	startIdx, endIdx := m.page.GetSliceBounds(len(contribs))
+	selectedInView := m.cursor - startIdx
 
 	rows := make([][]string, 0, endIdx-startIdx)
 	for i := startIdx; i < endIdx; i++ {
@@ -1087,6 +1250,7 @@ func (m Model) renderActivity() string {
 	}
 
 	sb.WriteString(m.newTable(selectedInView, []string{"Name", "Commits", "Share", "Bar"}, rows))
+	sb.WriteString("\n\n" + styleLabel.Render(m.page.View()))
 	return sb.String()
 }
 
@@ -1115,10 +1279,10 @@ func calendarCell(count, max int) string {
 func (m Model) renderTodos() string {
 	summary := m.todos
 	var sb strings.Builder
-	sb.WriteString("\n")
+	sb.WriteString("\n\n")
 
 	// Badge summary row
-	sb.WriteString("  ")
+	sb.WriteString("    ")
 	for _, kw := range []string{"TODO", "FIXME", "HACK", "XXX"} {
 		count := summary.CountByKind[kw]
 		var style lipgloss.Style
@@ -1130,10 +1294,10 @@ func (m Model) renderTodos() string {
 		default:
 			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(colorGray).Bold(true).Padding(0, 1)
 		}
-		sb.WriteString(style.Render(fmt.Sprintf("%s %d", kw, count)) + "  ")
+		sb.WriteString(style.Render(fmt.Sprintf("%s %d", kw, count)) + "   ")
 	}
 	sb.WriteString(styleValue.Render(fmt.Sprintf("Total: %d", summary.TotalCount)))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n\n\n")
 
 	if summary.TotalCount == 0 {
 		sb.WriteString(styleSuccess.Render("  ✓  No TODOs found — clean codebase!\n"))
@@ -1147,17 +1311,8 @@ func (m Model) renderTodos() string {
 	}
 
 	// 1 blank + 1 badge row + 1 blank = 3 overhead; table header+sep = 2
-	visibleRows := m.bodyHeight() - m.searchBarHeight() - 5
-	if visibleRows < 3 {
-		visibleRows = 3
-	}
-
-	startIdx := m.scrollOffset
-	endIdx := startIdx + visibleRows
-	if endIdx > len(items) {
-		endIdx = len(items)
-	}
-	selectedInView := m.cursor - m.scrollOffset
+	startIdx, endIdx := m.page.GetSliceBounds(len(items))
+	selectedInView := m.cursor - startIdx
 
 	rows := make([][]string, 0, endIdx-startIdx)
 	for i := startIdx; i < endIdx; i++ {
@@ -1171,6 +1326,7 @@ func (m Model) renderTodos() string {
 	}
 
 	sb.WriteString(m.newTable(selectedInView, []string{"Line", "Kind", "File", "Text"}, rows))
+	sb.WriteString("\n\n" + styleLabel.Render(m.page.View()))
 	return sb.String()
 }
 
@@ -1188,17 +1344,8 @@ func (m Model) renderStale() string {
 	now := time.Now()
 
 	// 1 blank + table header(2) + footer(1) = 4 overhead
-	visibleRows := m.bodyHeight() - m.searchBarHeight() - 4
-	if visibleRows < 3 {
-		visibleRows = 3
-	}
-
-	startIdx := m.scrollOffset
-	endIdx := startIdx + visibleRows
-	if endIdx > len(items) {
-		endIdx = len(items)
-	}
-	selectedInView := m.cursor - m.scrollOffset
+	startIdx, endIdx := m.page.GetSliceBounds(len(items))
+	selectedInView := m.cursor - startIdx
 
 	rows := make([][]string, 0, endIdx-startIdx)
 	for i := startIdx; i < endIdx; i++ {
@@ -1222,8 +1369,9 @@ func (m Model) renderStale() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("\n")
+	sb.WriteString("\n\n")
 	sb.WriteString(m.newTable(selectedInView, []string{"File", "Last Modified", "Commits", "Dormant"}, rows))
-	sb.WriteString(styleDim.Render("\n  Files sorted by oldest last-modified — potential dead code.\n"))
+	sb.WriteString(styleDim.Render("\n\n  Files sorted by oldest last-modified — potential dead code.\n"))
+	sb.WriteString("  " + styleLabel.Render(m.page.View()))
 	return sb.String()
 }
