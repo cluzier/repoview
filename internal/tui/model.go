@@ -630,7 +630,7 @@ func (m *Model) rebuildTable() {
 			{Title: "Dormant", Width: 10},
 		}
 		for _, f := range m.filteredStale() {
-			days := int(time.Now().Sub(f.LastModified).Hours() / 24)
+			days := int(time.Since(f.LastModified).Hours() / 24)
 			var dormant string
 			switch {
 			case days > 365:
