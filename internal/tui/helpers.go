@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/connerluzier/repoview/internal/git_analysis"
-	"github.com/connerluzier/repoview/internal/metrics"
+	"github.com/cluzier/repoview/internal/git_analysis"
+	"github.com/cluzier/repoview/internal/metrics"
 )
 
 // ── Blob animation ────────────────────────────────────────────────────────────
@@ -111,20 +111,17 @@ func addLineNumbers(content string) string {
 
 // ── Bubble Tea commands ───────────────────────────────────────────────────────
 
-// cloneRepo shallow-clones a remote URL into a temp directory.
+// cloneRepo shallow-clones a remote URL into a temp directory using the system git.
 func cloneRepo(url string) tea.Cmd {
 	return func() tea.Msg {
 		tmp, err := os.MkdirTemp("", "repoview-*")
 		if err != nil {
 			return cloneDoneMsg{err: err}
 		}
-		_, err = gogit.PlainClone(tmp, false, &gogit.CloneOptions{
-			URL:   url,
-			Depth: 200,
-		})
-		if err != nil {
+		cmd := exec.Command("git", "clone", "--depth=200", url, tmp)
+		if out, err := cmd.CombinedOutput(); err != nil {
 			os.RemoveAll(tmp)
-			return cloneDoneMsg{err: err}
+			return cloneDoneMsg{err: fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))}
 		}
 		return cloneDoneMsg{path: tmp}
 	}

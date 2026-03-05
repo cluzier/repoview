@@ -9,7 +9,7 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Built with Bubble Tea](https://img.shields.io/badge/Built%20with-Bubble%20Tea-ff69b4)](https://github.com/charmbracelet/bubbletea)
-[![Latest Release](https://img.shields.io/github/v/release/connerluzier/repoview)](https://github.com/connerluzier/repoview/releases)
+[![Latest Release](https://img.shields.io/github/v/release/cluzier/repoview)](https://github.com/cluzier/repoview/releases)
 
 </div>
 
@@ -34,13 +34,13 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 ### Install via `go install`
 
 ```bash
-go install github.com/connerluzier/repoview@latest
+go install github.com/cluzier/repoview@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/connerluzier/repoview.git
+git clone https://github.com/cluzier/repoview.git
 cd repoview
 go build -o repoview .
 ./repoview
@@ -145,4 +145,4 @@ Contributions, issues, and feature requests are welcome! See [CONTRIBUTING.md](C
 
 ## 📄 License
 
-MIT © [connerluzier](https://github.com/connerluzier)
+MIT © [cluzier](https://github.com/cluzier)

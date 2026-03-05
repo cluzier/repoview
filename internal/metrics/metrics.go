@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connerluzier/repoview/internal/git_analysis"
+	"github.com/cluzier/repoview/internal/git_analysis"
 )
 
 // RiskEntry represents a file with a computed risk score.
@@ -131,6 +131,12 @@ func ScanTodos(repoPath string) TodoSummary {
 	}
 }
 
+// isIdentChar returns true for characters that can form an identifier
+// (ASCII letters, digits, underscore). Used to check word boundaries.
+func isIdentChar(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
 func scanFile(path, repoPath string, items *[]TodoItem, countByKind map[string]int) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -148,6 +154,13 @@ func scanFile(path, repoPath string, items *[]TodoItem, countByKind map[string]i
 		upper := strings.ToUpper(line)
 		for _, kw := range todoKeywords {
 			if idx := strings.Index(upper, kw); idx >= 0 {
+				// Require word boundaries: the character before and after the
+				// keyword must not be an identifier character so that a match
+				// like "toDomain" (→ TODOMAIN) is not caught as TODO.
+				end := idx + len(kw)
+				if (idx > 0 && isIdentChar(upper[idx-1])) || (end < len(upper) && isIdentChar(upper[end])) {
+					continue
+				}
 				// Extract surrounding text
 				text := strings.TrimSpace(line[idx:])
 				if len(text) > 100 {

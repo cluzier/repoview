@@ -1,5 +1,4 @@
-// Package git_analysis provides fast repository analysis using a hybrid
-// go-git (metadata) + exec git (log/churn) approach.
+// Package git_analysis provides fast repository analysis using exec git.
 package git_analysis
 
 import (
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-git/go-git/v5"
 )
 
 // CommitInfo holds metadata for the most recent commit.
@@ -31,6 +28,7 @@ type RepoStats struct {
 	TotalContributors int
 	TotalBranches     int
 	TotalTags         int
+	Tags              []string // tag names, newest-first
 	RepoSizeBytes     int64
 	LatestCommit      *CommitInfo
 	RepoPath          string
@@ -58,6 +56,16 @@ type ContributorActivity struct {
 	Count int
 }
 
+// BranchInfo holds metadata about a single branch.
+type BranchInfo struct {
+	Name       string
+	ShortHash  string
+	AuthorName string
+	LastCommit time.Time
+	IsActive   bool // committed within the last 7 days
+	IsCurrent  bool // currently checked out
+}
+
 // AnalysisResult is the full result of a repository analysis.
 type AnalysisResult struct {
 	Stats               RepoStats
@@ -65,21 +73,18 @@ type AnalysisResult struct {
 	StaleFiles          []FileChurn
 	DailyActivity       []DailyActivity
 	ContributorActivity []ContributorActivity
+	BranchActivity      []BranchInfo
 	Error               error
 }
 
 // Analyze performs a full analysis of the git repository at repoPath.
 func Analyze(repoPath string) AnalysisResult {
-	// Resolve the actual .git root using go-git so we handle subdirectory runs.
-	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{DetectDotGit: true})
+	// Resolve the actual .git root so we handle subdirectory runs.
+	out, err := runGit(repoPath, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return AnalysisResult{Error: fmt.Errorf("not a git repository: %w", err)}
 	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return AnalysisResult{Error: err}
-	}
-	rootPath := wt.Filesystem.Root()
+	rootPath := strings.TrimSpace(out)
 
 	var result AnalysisResult
 	result.Stats.RepoPath = rootPath
@@ -88,17 +93,16 @@ func Analyze(repoPath string) AnalysisResult {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	wg.Add(4)
+	wg.Add(5)
 
-	// 1. Overview stats via go-git (fast - just references)
+	// 1. Overview stats
 	go func() {
 		defer wg.Done()
 		stats := computeOverviewStats(rootPath)
 		mu.Lock()
 		result.Stats.TotalCommits = stats.TotalCommits
-		result.Stats.TotalContributors = stats.TotalContributors
-		result.Stats.TotalBranches = stats.TotalBranches
 		result.Stats.TotalTags = stats.TotalTags
+		result.Stats.Tags = stats.Tags
 		result.Stats.LatestCommit = stats.LatestCommit
 		mu.Unlock()
 	}()
@@ -130,7 +134,20 @@ func Analyze(repoPath string) AnalysisResult {
 		mu.Unlock()
 	}()
 
+	// 5. Branch activity
+	go func() {
+		defer wg.Done()
+		branches := computeBranchActivity(rootPath)
+		mu.Lock()
+		result.BranchActivity = branches
+		mu.Unlock()
+	}()
+
 	wg.Wait()
+
+	// Derive counts from already-computed slices (no extra git calls needed).
+	result.Stats.TotalContributors = len(result.ContributorActivity)
+	result.Stats.TotalBranches = len(result.BranchActivity)
 
 	// Compute stale files: copy FileChurns, filter zero LastModified, sort ascending by LastModified
 	staleFiles := make([]FileChurn, 0, len(result.FileChurns))
@@ -149,55 +166,25 @@ func Analyze(repoPath string) AnalysisResult {
 	return result
 }
 
-// computeOverviewStats gathers commit count, contributors, branches, tags, and latest commit.
+// computeOverviewStats gathers commit count, tags, and latest commit.
 func computeOverviewStats(rootPath string) RepoStats {
 	var stats RepoStats
 
-	// Commit count + contributors via git shortlog (very fast)
+	// Commit count
 	out, err := runGit(rootPath, "rev-list", "--count", "HEAD")
 	if err == nil {
 		n, _ := strconv.Atoi(strings.TrimSpace(out))
 		stats.TotalCommits = n
 	}
 
-	// Unique contributors
-	out, err = runGit(rootPath, "shortlog", "-sn", "--all", "--no-merges")
+	// Tags — collect names (newest-first) and count
+	out, err = runGit(rootPath, "tag", "--sort=-creatordate", "--list")
 	if err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(out))
 		for scanner.Scan() {
-			if strings.TrimSpace(scanner.Text()) != "" {
-				stats.TotalContributors++
-			}
-		}
-	}
-
-	// Branches: count unique names across local and all remotes
-	out, err = runGit(rootPath, "branch", "-a", "--format=%(refname:short)")
-	if err == nil {
-		seen := make(map[string]struct{})
-		scanner := bufio.NewScanner(strings.NewReader(out))
-		for scanner.Scan() {
-			raw := strings.TrimSpace(scanner.Text())
-			if raw == "" || strings.HasSuffix(raw, "/HEAD") {
-				continue
-			}
-			// normalize "origin/main" → "main" for deduplication
-			name := raw
-			if idx := strings.LastIndex(raw, "/"); idx >= 0 {
-				name = raw[idx+1:]
-			}
-			seen[name] = struct{}{}
-		}
-		stats.TotalBranches = len(seen)
-	}
-
-	// Tags
-	out, err = runGit(rootPath, "tag", "--list")
-	if err == nil {
-		scanner := bufio.NewScanner(strings.NewReader(out))
-		for scanner.Scan() {
-			if strings.TrimSpace(scanner.Text()) != "" {
+			if name := strings.TrimSpace(scanner.Text()); name != "" {
 				stats.TotalTags++
+				stats.Tags = append(stats.Tags, name)
 			}
 		}
 	}
@@ -377,4 +364,56 @@ func runGit(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+// computeBranchActivity returns all branches sorted by most recently committed,
+// annotated with whether each is active (committed within the last 7 days).
+func computeBranchActivity(rootPath string) []BranchInfo {
+	currentBranch, _ := runGit(rootPath, "rev-parse", "--abbrev-ref", "HEAD")
+	currentBranch = strings.TrimSpace(currentBranch)
+
+	out, err := runGit(rootPath, "for-each-ref",
+		"--sort=-committerdate",
+		"--format=%(refname:short)|%(objectname:short)|%(committername)|%(committerdate:iso)",
+		"refs/heads/", "refs/remotes/",
+	)
+	if err != nil {
+		return nil
+	}
+
+	weekAgo := time.Now().AddDate(0, 0, -7)
+	seen := make(map[string]struct{})
+	var branches []BranchInfo
+
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		parts := strings.SplitN(scanner.Text(), "|", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		name := parts[0]
+		if strings.HasSuffix(name, "/HEAD") || name == "HEAD" {
+			continue
+		}
+		// Normalize remote names (origin/main → main) for deduplication.
+		shortName := name
+		if idx := strings.LastIndex(name, "/"); idx >= 0 {
+			shortName = name[idx+1:]
+		}
+		if _, ok := seen[shortName]; ok {
+			continue
+		}
+		seen[shortName] = struct{}{}
+
+		t, _ := time.Parse("2006-01-02 15:04:05 -0700", parts[3])
+		branches = append(branches, BranchInfo{
+			Name:       shortName,
+			ShortHash:  parts[1],
+			AuthorName: parts[2],
+			LastCommit: t,
+			IsActive:   t.After(weekAgo),
+			IsCurrent:  shortName == currentBranch,
+		})
+	}
+	return branches
 }

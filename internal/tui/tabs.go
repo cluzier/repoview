@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/connerluzier/repoview/internal/utils"
+	"github.com/cluzier/repoview/internal/utils"
 )
 
 // ── Overview ──────────────────────────────────────────────────────────────────
@@ -35,6 +35,19 @@ func (m Model) renderOverview() string {
 		kv("💾", "Approx. Size", utils.HumanBytes(s.RepoSizeBytes)),
 	}
 
+	if len(s.Tags) > 0 {
+		const maxTags = 5
+		shown := s.Tags
+		if len(shown) > maxTags {
+			shown = shown[:maxTags]
+		}
+		tagLine := strings.Join(shown, "  ·  ")
+		if len(s.Tags) > maxTags {
+			tagLine += fmt.Sprintf("  +%d more", len(s.Tags)-maxTags)
+		}
+		lines = append(lines, "    "+styleDim.Render("          ")+"   "+styleDim.Render(tagLine))
+	}
+
 	if s.LatestCommit != nil {
 		lc := s.LatestCommit
 		divider := "    " + styleDim.Render(strings.Repeat("─", pw-8))
@@ -46,6 +59,41 @@ func (m Model) renderOverview() string {
 		)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ── Branches ──────────────────────────────────────────────────────────────────
+
+func (m Model) renderBranches() string {
+	branches := m.result.BranchActivity
+	if len(branches) == 0 {
+		return styleDim.Render("\n  No branch data available.")
+	}
+
+	startIdx, endIdx := m.page.GetSliceBounds(len(branches))
+	selectedInView := m.cursor - startIdx
+
+	rows := make([][]string, 0, endIdx-startIdx)
+	for i := startIdx; i < endIdx; i++ {
+		b := branches[i]
+
+		name := b.Name
+		if b.IsCurrent {
+			name = styleAccent.Render("* " + name)
+		} else {
+			name = "  " + name
+		}
+
+		status := "  "
+		if b.IsActive {
+			status = styleSuccess.Render("● active")
+		}
+
+		last := utils.TimeAgo(b.LastCommit)
+		rows = append(rows, []string{name, b.AuthorName, last, b.ShortHash, status})
+	}
+
+	table := m.newTable(selectedInView, []string{"Branch", "Last Author", "Last Commit", "Hash", "Status"}, rows)
+	return "\n\n" + table + "\n\n" + styleLabel.Render(m.page.View())
 }
 
 // ── Churn ─────────────────────────────────────────────────────────────────────

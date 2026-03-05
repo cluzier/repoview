@@ -114,6 +114,8 @@ func (m Model) viewMain() string {
 		switch m.activeTab {
 		case TabOverview:
 			body = m.renderOverview()
+		case TabBranches:
+			body = m.renderBranches()
 		case TabChurn:
 			body = m.renderChurn()
 		case TabActivity:
@@ -200,6 +202,8 @@ func (m Model) renderStatusBar() string {
 		switch m.activeTab {
 		case TabChurn, TabTodos, TabStale:
 			middleText = base + "   / filter  o open  y copy"
+		case TabBranches:
+			middleText = base
 		default:
 			middleText = base
 		}

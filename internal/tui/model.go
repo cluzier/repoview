@@ -14,8 +14,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/connerluzier/repoview/internal/git_analysis"
-	"github.com/connerluzier/repoview/internal/metrics"
+	"github.com/cluzier/repoview/internal/git_analysis"
+	"github.com/cluzier/repoview/internal/metrics"
 )
 
 // ── App states ────────────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ type Tab int
 
 const (
 	TabOverview Tab = iota
+	TabBranches
 	TabChurn
 	TabActivity
 	TabTodos
@@ -42,7 +43,7 @@ const (
 	tabCount
 )
 
-var tabNames = [tabCount]string{"   Overview   ", "   Churn   ", "   Activity   ", "   Todos   ", "   Stale   "}
+var tabNames = [tabCount]string{"   Overview   ", "   Branches   ", "   Churn   ", "   Activity   ", "   Todos   ", "   Stale   "}
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
@@ -143,6 +144,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewer.Width = msg.Width
 			m.viewer.Height = msg.Height - 3
 		}
+		if m.state == stateMain {
+			m.clampScroll()
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -173,6 +177,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Result.Error
 		m.cursor = 0
 		m.page.Page = 0
+		m.clampScroll()
 
 	case flashClearMsg:
 		m.flashMsg = ""
@@ -184,9 +189,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, runAnalysis(m.repoPath)
 
 	case tea.KeyMsg:
+		// ctrl+c quits from any state, always cleaning up.
+		if msg.Type == tea.KeyCtrlC {
+			m.Cleanup()
+			return m, tea.Quit
+		}
 		switch m.state {
 		case stateInput:
 			return m.updateInput(msg)
+		case stateLoading:
+			return m.updateLoading(msg)
 		case stateMain:
 			return m.updateMain(msg)
 		case stateViewer:
@@ -241,6 +253,20 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateLoading handles key presses while a clone or analysis is in progress.
+func (m Model) updateLoading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.Cleanup()
+		return m, tea.Quit
+	}
+	if msg.String() == "q" {
+		m.Cleanup()
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
 func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searchMode {
 		switch msg.Type {
@@ -265,10 +291,8 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "q", "ctrl+c":
-		if m.tmpDir != "" {
-			os.RemoveAll(m.tmpDir)
-		}
+	case "q":
+		m.Cleanup()
 		return m, tea.Quit
 
 	case "backspace", "esc":
@@ -279,10 +303,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.page.Page = 0
 			return m, nil
 		}
-		if m.tmpDir != "" {
-			os.RemoveAll(m.tmpDir)
-			m.tmpDir = ""
-		}
+		m.Cleanup()
 		m.state = stateInput
 		m.activeTab = TabOverview
 		m.input.SetValue("")
@@ -394,6 +415,21 @@ func (m Model) updateViewer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Model helpers ─────────────────────────────────────────────────────────────
 
+// Cleanup removes all repoview temporary directories from the OS temp folder,
+// including any orphaned from previous crashed sessions.
+func (m *Model) Cleanup() {
+	m.tmpDir = ""
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "repoview-") {
+			os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
+		}
+	}
+}
+
 // resetSearch clears search state and resets the cursor/page, used on tab change.
 func (m *Model) resetSearch() {
 	m.cursor = 0
@@ -401,10 +437,13 @@ func (m *Model) resetSearch() {
 	m.searchMode = false
 	m.searchQuery = ""
 	m.searchInput.SetValue("")
+	m.clampScroll()
 }
 
 func (m *Model) listLen() int {
 	switch m.activeTab {
+	case TabBranches:
+		return len(m.result.BranchActivity)
 	case TabChurn:
 		return len(m.filteredChurns())
 	case TabActivity:
@@ -442,6 +481,9 @@ func (m *Model) clampScroll() {
 func (m Model) visibleRows() int {
 	var n int
 	switch m.activeTab {
+	case TabBranches:
+		// 2 blank + top border + header + sep + bottom border + 2 blank + page = 8
+		n = m.bodyHeight() - 8
 	case TabChurn:
 		// 2 blank + top border + header + sep + bottom border + 2 blank + page = 8
 		n = m.bodyHeight() - m.searchBarHeight() - 8

@@ -5,7 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/connerluzier/repoview/internal/tui"
+	"github.com/cluzier/repoview/internal/tui"
 )
 
 // version is set at build time via -X main.version=<tag> (see .goreleaser.yaml).
@@ -18,7 +18,11 @@ func main() {
 	}
 	m := tui.New()
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if fm, ok := final.(tui.Model); ok {
+		fm.Cleanup()
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error running TUI: %v\n", err)
 		os.Exit(1)
 	}

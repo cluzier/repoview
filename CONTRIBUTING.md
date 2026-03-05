@@ -23,7 +23,7 @@ Thanks for your interest in contributing! This document explains the codebase, h
 **Prerequisites:** Go 1.24+, `git` on your PATH.
 
 ```bash
-git clone https://github.com/connerluzier/repoview.git
+git clone https://github.com/cluzier/repoview.git
 cd repoview
 
 # build and run
