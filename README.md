@@ -9,7 +9,7 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Built with Bubble Tea](https://img.shields.io/badge/Built%20with-Bubble%20Tea-ff69b4)](https://github.com/charmbracelet/bubbletea)
-[![Latest Release](https://img.shields.io/github/v/release/cluzier/repoview)](https://github.com/cluzier/repoview/releases)
+[![Latest Release](https://img.shields.io/github/v/tag/cluzier/repoview)](https://github.com/cluzier/repoview/releases)
 
 </div>
 
