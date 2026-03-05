@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	ltable "github.com/charmbracelet/lipgloss/table"
 )
 
 // ── Top-level view dispatch ───────────────────────────────────────────────────
@@ -74,24 +73,29 @@ func (m Model) viewLoading() string {
 // ── File viewer ───────────────────────────────────────────────────────────────
 
 func (m Model) viewViewer() string {
-	titleStyle := lipgloss.NewStyle().
-		Foreground(colorFg).Bold(true).
-		Background(lipgloss.Color("#0369a1")).
-		Padding(0, 2).
-		Width(m.width)
-	header := titleStyle.Render("  " + m.viewerTitle)
+	titleStyle := func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1).Foreground(colorBlue).Bold(true)
+	}()
+	infoStyle := func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1).Foreground(colorGray)
+	}()
 
-	pct := int(m.viewer.ScrollPercent() * 100)
-	footerStyle := lipgloss.NewStyle().
-		Foreground(colorText).
-		Background(lipgloss.Color("#0c1e2c")).
-		Width(m.width).Padding(0, 1)
-	hints := styleDim.Render("↑/↓ scroll  PgUp/PgDn  q/Esc close")
-	scrollPct := styleAccent.Render(fmt.Sprintf("%d%%", pct))
-	footer := footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(m.width-10).Render(hints),
-		scrollPct,
-	))
+	title := titleStyle.Render(m.viewerTitle)
+	headerLine := strings.Repeat("─", max(0, m.width-lipgloss.Width(title)))
+	header := lipgloss.JoinHorizontal(lipgloss.Center, title, styleLabel.Render(headerLine))
+
+	pct := infoStyle.Render(fmt.Sprintf("%3.f%%", m.viewer.ScrollPercent()*100))
+	hints := styleDim.Render("↑/↓  PgUp/PgDn  q/Esc close")
+	footerLine := strings.Repeat("─", max(0, m.width-lipgloss.Width(pct)-lipgloss.Width(hints)-2))
+	footer := lipgloss.JoinHorizontal(lipgloss.Center,
+		"  "+hints,
+		styleLabel.Render(footerLine),
+		pct,
+	)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, m.viewer.View(), footer)
 }
@@ -180,38 +184,12 @@ func (m Model) renderTabs(pw int) string {
 }
 
 func (m Model) renderStatusBar() string {
-	pw := m.panelWidth()
-	repoName := m.result.Stats.RepoName
-	if repoName == "" {
-		repoName = "no repo"
-	}
-	tabLabel := strings.TrimSpace(tabNames[m.activeTab])
-
-	pill := statusPill.Render("repoview")
-	right := statusRightPill.Render(repoName)
-	descW := pw - lipgloss.Width(pill) - lipgloss.Width(right)
-	if descW < 0 {
-		descW = 0
-	}
-
-	var middleText string
 	if m.flashMsg != "" {
-		middleText = "  " + m.flashMsg
-	} else {
-		base := "  " + tabLabel + "   ←/→ tabs  ↑/↓ scroll  r refresh  Esc back  q quit"
-		switch m.activeTab {
-		case TabChurn, TabTodos, TabStale:
-			middleText = base + "   / filter  o open  y copy"
-		case TabBranches:
-			middleText = base
-		default:
-			middleText = base
-		}
+		return statusBarBg.Width(m.panelWidth()).Padding(0, 1).Render(m.flashMsg)
 	}
-
-	desc := statusBarBg.Width(descW).Render(middleText)
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, pill, desc, right)
-	return statusBarBg.Width(pw).Render(bar)
+	showFileOps := m.activeTab == TabChurn || m.activeTab == TabTodos || m.activeTab == TabStale
+	helpView := m.help.View(mainKeyMap{showFileOps: showFileOps})
+	return statusBarBg.Width(m.panelWidth()).Padding(0, 1).Render(helpView)
 }
 
 func (m Model) renderSearchBar() string {
@@ -222,40 +200,6 @@ func (m Model) renderSearchBar() string {
 
 // ── Table helper ──────────────────────────────────────────────────────────────
 
-// newTable builds a lipgloss table with consistent app-wide styling.
-// selectedInView is the cursor's 0-based position within the visible window.
-func (m Model) newTable(selectedInView int, headers []string, rows [][]string) string {
-	inner := m.panelWidth() - 2 // 2 chars reserved for left/right border
-	if inner < 10 {
-		inner = 10
-	}
-
-	t := ltable.New().
-		Border(lipgloss.NormalBorder()).
-		BorderTop(false).
-		BorderBottom(false).
-		BorderLeft(false).
-		BorderRight(false).
-		BorderColumn(false).
-		BorderHeader(true).
-		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
-		Width(inner).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			switch {
-			case row == ltable.HeaderRow:
-				return tableHeader
-			case row == selectedInView:
-				return tableSelected
-			default:
-				return tableCell
-			}
-		}).
-		Headers(headers...).
-		Rows(rows...)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorSubtle).
-		Width(inner).
-		Render(t.Render())
+func (m Model) renderTable() string {
+	return m.tbl.View()
 }

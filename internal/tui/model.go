@@ -8,14 +8,16 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/paginator"
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/cluzier/repoview/internal/git_analysis"
 	"github.com/cluzier/repoview/internal/metrics"
+	"github.com/cluzier/repoview/internal/utils"
 )
 
 // ── App states ────────────────────────────────────────────────────────────────
@@ -23,7 +25,7 @@ import (
 type appState int
 
 const (
-	stateInput   appState = iota
+	stateInput appState = iota
 	stateLoading
 	stateMain
 	stateViewer
@@ -81,10 +83,10 @@ type Model struct {
 	err       error
 	result    git_analysis.AnalysisResult
 	todos     metrics.TodoSummary
-	cursor    int
+	tbl       table.Model
+	help      help.Model
 	width     int
 	height    int
-	page      paginator.Model
 
 	viewer      viewport.Model
 	viewerTitle string
@@ -111,20 +113,15 @@ func New() Model {
 	si.Width = 40
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.Pulse
 	sp.Style = lipgloss.NewStyle().Foreground(colorBlue)
-
-	pg := paginator.New()
-	pg.Type = paginator.Arabic
-	pg.ArabicFormat = "  page %d / %d"
-	pg.PerPage = 10 // recalculated on first render
 
 	return Model{
 		state:       stateInput,
 		input:       ti,
 		spinner:     sp,
 		searchInput: si,
-		page:        pg,
+		help:        help.New(),
 	}
 }
 
@@ -140,12 +137,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.help.Width = msg.Width
 		if m.state == stateViewer {
 			m.viewer.Width = msg.Width
-			m.viewer.Height = msg.Height - 3
+			m.viewer.Height = msg.Height - 6
 		}
 		if m.state == stateMain {
-			m.clampScroll()
+			m.rebuildTable()
 		}
 
 	case spinner.TickMsg:
@@ -175,17 +173,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.result = msg.Result
 		m.todos = msg.Todos
 		m.err = msg.Result.Error
-		m.cursor = 0
-		m.page.Page = 0
-		m.clampScroll()
+		m.rebuildTable()
 
 	case flashClearMsg:
 		m.flashMsg = ""
 
 	case RefreshMsg:
 		m.loading = true
-		m.cursor = 0
-		m.page.Page = 0
 		return m, runAnalysis(m.repoPath)
 
 	case tea.KeyMsg:
@@ -274,8 +268,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchMode = false
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
-			m.cursor = 0
-			m.page.Page = 0
+			m.rebuildTable()
 			return m, nil
 		case tea.KeyEnter:
 			m.searchMode = false
@@ -284,8 +277,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
 			m.searchQuery = m.searchInput.Value()
-			m.cursor = 0
-			m.page.Page = 0
+			m.rebuildTable()
 			return m, cmd
 		}
 	}
@@ -299,8 +291,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.searchQuery != "" {
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
-			m.cursor = 0
-			m.page.Page = 0
+			m.rebuildTable()
 			return m, nil
 		}
 		m.Cleanup()
@@ -338,24 +329,16 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		m.clampScroll()
+		m.tbl.MoveUp(1)
 
 	case "down", "j":
-		m.cursor++
-		m.clampCursor()
-		m.clampScroll()
+		m.tbl.MoveDown(1)
 
 	case "g":
-		m.cursor = 0
-		m.page.Page = 0
+		m.tbl.GotoTop()
 
 	case "G":
-		m.cursor = m.listLen() - 1
-		m.clampCursor()
-		m.clampScroll()
+		m.tbl.GotoBottom()
 
 	case "tab":
 		m.activeTab = (m.activeTab + 1) % tabCount
@@ -373,7 +356,7 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return flashClearMsg{} })
 		}
 		numbered := addLineNumbers(string(content))
-		vp := viewport.New(m.width, m.height-3)
+		vp := viewport.New(m.width, m.height-6)
 		vp.Style = lipgloss.NewStyle().Foreground(colorText)
 		vp.SetContent(numbered)
 		if line := m.currentFileLine(); line > 1 {
@@ -430,79 +413,12 @@ func (m *Model) Cleanup() {
 	}
 }
 
-// resetSearch clears search state and resets the cursor/page, used on tab change.
+// resetSearch clears search state and rebuilds the table, used on tab change.
 func (m *Model) resetSearch() {
-	m.cursor = 0
-	m.page.Page = 0
 	m.searchMode = false
 	m.searchQuery = ""
 	m.searchInput.SetValue("")
-	m.clampScroll()
-}
-
-func (m *Model) listLen() int {
-	switch m.activeTab {
-	case TabBranches:
-		return len(m.result.BranchActivity)
-	case TabChurn:
-		return len(m.filteredChurns())
-	case TabActivity:
-		return len(m.result.ContributorActivity)
-	case TabTodos:
-		return len(m.filteredTodos())
-	case TabStale:
-		return len(m.filteredStale())
-	}
-	return 0
-}
-
-func (m *Model) clampCursor() {
-	l := m.listLen()
-	if l == 0 {
-		m.cursor = 0
-		return
-	}
-	if m.cursor >= l {
-		m.cursor = l - 1
-	}
-}
-
-func (m *Model) clampScroll() {
-	perPage := m.visibleRows()
-	if perPage < 1 {
-		perPage = 1
-	}
-	m.page.PerPage = perPage
-	m.page.SetTotalPages(m.listLen())
-	m.page.Page = m.cursor / perPage
-}
-
-// visibleRows returns how many list rows fit in the body for the active tab.
-func (m Model) visibleRows() int {
-	var n int
-	switch m.activeTab {
-	case TabBranches:
-		// 2 blank + top border + header + sep + bottom border + 2 blank + page = 8
-		n = m.bodyHeight() - 8
-	case TabChurn:
-		// 2 blank + top border + header + sep + bottom border + 2 blank + page = 8
-		n = m.bodyHeight() - m.searchBarHeight() - 8
-	case TabActivity:
-		// calendar+legend+spacing (~20) + table chrome + page ≈ 24
-		n = m.bodyHeight() - 24
-	case TabTodos:
-		// 2 blank + badges + 3 blank + table chrome + 2 blank + page = 12
-		n = m.bodyHeight() - m.searchBarHeight() - 12
-	case TabStale:
-		// 2 blank + table chrome + footer + page = 9
-		n = m.bodyHeight() - m.searchBarHeight() - 9
-	default:
-		n = m.bodyHeight()
-	}
-	if n < 1 {
-		n = 1
-	}
-	return n
+	m.rebuildTable()
 }
 
 // panelWidth is the usable content width (full terminal width, min 40).
@@ -587,18 +503,18 @@ func (m Model) currentFilePath() string {
 	switch m.activeTab {
 	case TabChurn:
 		items := m.filteredChurns()
-		if m.cursor < len(items) {
-			return items[m.cursor].Path
+		if m.tbl.Cursor() < len(items) {
+			return items[m.tbl.Cursor()].Path
 		}
 	case TabStale:
 		items := m.filteredStale()
-		if m.cursor < len(items) {
-			return items[m.cursor].Path
+		if m.tbl.Cursor() < len(items) {
+			return items[m.tbl.Cursor()].Path
 		}
 	case TabTodos:
 		items := m.filteredTodos()
-		if m.cursor < len(items) {
-			return items[m.cursor].File
+		if m.tbl.Cursor() < len(items) {
+			return items[m.tbl.Cursor()].File
 		}
 	}
 	return ""
@@ -610,8 +526,149 @@ func (m Model) currentFileLine() int {
 		return 0
 	}
 	items := m.filteredTodos()
-	if m.cursor < len(items) {
-		return items[m.cursor].Line
+	if m.tbl.Cursor() < len(items) {
+		return items[m.tbl.Cursor()].Line
 	}
 	return 0
+}
+
+// rebuildTable constructs a new bubbles/table for the active tab.
+func (m *Model) rebuildTable() {
+	if m.activeTab == TabOverview {
+		return
+	}
+
+	pw := m.panelWidth()
+	var cols []table.Column
+	var rows []table.Row
+	prefixLines := 0
+
+	switch m.activeTab {
+	case TabBranches:
+		prefixLines = 1
+		cols = []table.Column{
+			{Title: "Branch", Width: pw * 30 / 100},
+			{Title: "Last Author", Width: pw * 18 / 100},
+			{Title: "Last Commit", Width: pw * 14 / 100},
+			{Title: "Hash", Width: 10},
+			{Title: "Status", Width: 8},
+		}
+		for _, b := range m.result.BranchActivity {
+			name := "  " + b.Name
+			if b.IsCurrent {
+				name = styleAccent.Render("* " + b.Name)
+			}
+			status := ""
+			if b.IsActive {
+				status = styleSuccess.Render("● active")
+			}
+			rows = append(rows, table.Row{name, b.AuthorName, utils.TimeAgo(b.LastCommit), b.ShortHash, status})
+		}
+
+	case TabChurn:
+		prefixLines = 1
+		cols = []table.Column{
+			{Title: "File", Width: pw * 35 / 100},
+			{Title: "Commits", Width: 8},
+			{Title: "Authors", Width: 8},
+			{Title: "Last Modified", Width: 14},
+			{Title: "Churn", Width: pw * 18 / 100},
+		}
+		churns := m.filteredChurns()
+		maxCommits := 0
+		if len(churns) > 0 {
+			maxCommits = churns[0].CommitCount
+		}
+		for _, f := range churns {
+			bar := utils.Heatmap(f.CommitCount, maxCommits, 20)
+			rows = append(rows, table.Row{f.Path, fmt.Sprintf("%d", f.CommitCount), fmt.Sprintf("%d", f.UniqueAuthors), utils.TimeAgo(f.LastModified), bar})
+		}
+
+	case TabActivity:
+		prefixLines = 17
+		cols = []table.Column{
+			{Title: "Name", Width: pw * 30 / 100},
+			{Title: "Commits", Width: 8},
+			{Title: "Share", Width: 8},
+			{Title: "Bar", Width: pw * 25 / 100},
+		}
+		contribs := m.result.ContributorActivity
+		total := 0
+		for _, c := range contribs {
+			total += c.Count
+		}
+		for _, c := range contribs {
+			pct := 0.0
+			if total > 0 {
+				pct = float64(c.Count) / float64(total) * 100
+			}
+			bar := ""
+			if len(contribs) > 0 {
+				bar = utils.Heatmap(c.Count, contribs[0].Count, 20)
+			}
+			rows = append(rows, table.Row{c.Name, fmt.Sprintf("%d", c.Count), fmt.Sprintf("%.1f%%", pct), bar})
+		}
+
+	case TabTodos:
+		prefixLines = 5
+		cols = []table.Column{
+			{Title: "Line", Width: 6},
+			{Title: "Kind", Width: 8},
+			{Title: "File", Width: pw * 28 / 100},
+			{Title: "Text", Width: pw * 35 / 100},
+		}
+		for _, item := range m.filteredTodos() {
+			rows = append(rows, table.Row{fmt.Sprintf("%d", item.Line), item.Kind, item.File, utils.Truncate(item.Text, pw-60)})
+		}
+
+	case TabStale:
+		prefixLines = 1
+		cols = []table.Column{
+			{Title: "File", Width: pw * 38 / 100},
+			{Title: "Last Modified", Width: 14},
+			{Title: "Commits", Width: 8},
+			{Title: "Dormant", Width: 10},
+		}
+		for _, f := range m.filteredStale() {
+			days := int(time.Now().Sub(f.LastModified).Hours() / 24)
+			var dormant string
+			switch {
+			case days > 365:
+				dormant = styleDanger.Render(fmt.Sprintf("%d days", days))
+			case days > 180:
+				dormant = styleWarning.Render(fmt.Sprintf("%d days", days))
+			default:
+				dormant = styleSuccess.Render(fmt.Sprintf("%d days", days))
+			}
+			rows = append(rows, table.Row{f.Path, f.LastModified.Format("2006-01-02"), fmt.Sprintf("%d", f.CommitCount), dormant})
+		}
+	}
+
+	h := (m.bodyHeight() - m.searchBarHeight()) - prefixLines - 1
+	if m.activeTab == TabStale {
+		h -= 3
+	}
+	if h < 3 {
+		h = 3
+	}
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorSubtle).
+		BorderBottom(true).
+		Foreground(colorGray).
+		Bold(false)
+	s.Cell = lipgloss.NewStyle().Padding(0, 1).Foreground(colorText)
+	s.Selected = lipgloss.NewStyle().Padding(0, 1).Foreground(colorBlue).Bold(true)
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(h),
+		table.WithWidth(pw),
+		table.WithFocused(true),
+	)
+	t.SetStyles(s)
+	m.tbl = t
 }

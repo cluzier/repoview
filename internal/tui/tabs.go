@@ -64,36 +64,10 @@ func (m Model) renderOverview() string {
 // ── Branches ──────────────────────────────────────────────────────────────────
 
 func (m Model) renderBranches() string {
-	branches := m.result.BranchActivity
-	if len(branches) == 0 {
+	if len(m.result.BranchActivity) == 0 {
 		return styleDim.Render("\n  No branch data available.")
 	}
-
-	startIdx, endIdx := m.page.GetSliceBounds(len(branches))
-	selectedInView := m.cursor - startIdx
-
-	rows := make([][]string, 0, endIdx-startIdx)
-	for i := startIdx; i < endIdx; i++ {
-		b := branches[i]
-
-		name := b.Name
-		if b.IsCurrent {
-			name = styleAccent.Render("* " + name)
-		} else {
-			name = "  " + name
-		}
-
-		status := "  "
-		if b.IsActive {
-			status = styleSuccess.Render("● active")
-		}
-
-		last := utils.TimeAgo(b.LastCommit)
-		rows = append(rows, []string{name, b.AuthorName, last, b.ShortHash, status})
-	}
-
-	table := m.newTable(selectedInView, []string{"Branch", "Last Author", "Last Commit", "Hash", "Status"}, rows)
-	return "\n\n" + table + "\n\n" + styleLabel.Render(m.page.View())
+	return "\n" + m.renderTable()
 }
 
 // ── Churn ─────────────────────────────────────────────────────────────────────
@@ -102,30 +76,10 @@ func (m Model) renderChurn() string {
 	if len(m.result.FileChurns) == 0 {
 		return styleDim.Render("\n  No data available.")
 	}
-	top := m.filteredChurns()
-	if len(top) == 0 {
+	if len(m.filteredChurns()) == 0 {
 		return styleDim.Render("\n  No results match your filter.")
 	}
-	maxCommits := top[0].CommitCount
-
-	startIdx, endIdx := m.page.GetSliceBounds(len(top))
-	selectedInView := m.cursor - startIdx
-
-	rows := make([][]string, 0, endIdx-startIdx)
-	for i := startIdx; i < endIdx; i++ {
-		f := top[i]
-		bar := utils.Heatmap(f.CommitCount, maxCommits, 25)
-		rows = append(rows, []string{
-			f.Path,
-			fmt.Sprintf("%d", f.CommitCount),
-			fmt.Sprintf("%d", f.UniqueAuthors),
-			utils.TimeAgo(f.LastModified),
-			bar,
-		})
-	}
-
-	table := m.newTable(selectedInView, []string{"File", "Commits", "Authors", "Last Modified", "Churn"}, rows)
-	return "\n\n" + table + "\n\n" + styleLabel.Render(m.page.View())
+	return "\n" + m.renderTable()
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────
@@ -213,33 +167,7 @@ func (m Model) renderActivity() string {
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(styleAccent.Render("  Contributors") + "\n\n")
-
-	total := 0
-	for _, c := range contribs {
-		total += c.Count
-	}
-
-	startIdx, endIdx := m.page.GetSliceBounds(len(contribs))
-	selectedInView := m.cursor - startIdx
-
-	rows := make([][]string, 0, endIdx-startIdx)
-	for i := startIdx; i < endIdx; i++ {
-		c := contribs[i]
-		pct := 0.0
-		if total > 0 {
-			pct = float64(c.Count) / float64(total) * 100
-		}
-		bar := utils.Heatmap(c.Count, contribs[0].Count, 20)
-		rows = append(rows, []string{
-			c.Name,
-			fmt.Sprintf("%d", c.Count),
-			fmt.Sprintf("%.1f%%", pct),
-			bar,
-		})
-	}
-
-	sb.WriteString(m.newTable(selectedInView, []string{"Name", "Commits", "Share", "Bar"}, rows))
-	sb.WriteString("\n\n" + styleLabel.Render(m.page.View()))
+	sb.WriteString(m.renderTable())
 	return sb.String()
 }
 
@@ -268,7 +196,7 @@ func calendarCell(count, max int) string {
 func (m Model) renderTodos() string {
 	summary := m.todos
 	var sb strings.Builder
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 
 	// Badge summary row
 	sb.WriteString("    ")
@@ -299,22 +227,7 @@ func (m Model) renderTodos() string {
 		return sb.String()
 	}
 
-	startIdx, endIdx := m.page.GetSliceBounds(len(items))
-	selectedInView := m.cursor - startIdx
-
-	rows := make([][]string, 0, endIdx-startIdx)
-	for i := startIdx; i < endIdx; i++ {
-		item := items[i]
-		rows = append(rows, []string{
-			fmt.Sprintf("%d", item.Line),
-			item.Kind,
-			item.File,
-			utils.Truncate(item.Text, m.panelWidth()-80),
-		})
-	}
-
-	sb.WriteString(m.newTable(selectedInView, []string{"Line", "Kind", "File", "Text"}, rows))
-	sb.WriteString("\n\n" + styleLabel.Render(m.page.View()))
+	sb.WriteString(m.renderTable())
 	return sb.String()
 }
 
@@ -324,40 +237,13 @@ func (m Model) renderStale() string {
 	if len(m.result.StaleFiles) == 0 {
 		return styleDim.Render("\n  No data available.")
 	}
-	items := m.filteredStale()
-	if len(items) == 0 {
+	if len(m.filteredStale()) == 0 {
 		return styleDim.Render("\n  No results match your filter.")
 	}
 
-	now := time.Now()
-	startIdx, endIdx := m.page.GetSliceBounds(len(items))
-	selectedInView := m.cursor - startIdx
-
-	rows := make([][]string, 0, endIdx-startIdx)
-	for i := startIdx; i < endIdx; i++ {
-		f := items[i]
-		days := int(now.Sub(f.LastModified).Hours() / 24)
-		var dormant string
-		switch {
-		case days > 365:
-			dormant = styleDanger.Render(fmt.Sprintf("%d days", days))
-		case days > 180:
-			dormant = styleWarning.Render(fmt.Sprintf("%d days", days))
-		default:
-			dormant = styleSuccess.Render(fmt.Sprintf("%d days", days))
-		}
-		rows = append(rows, []string{
-			f.Path,
-			f.LastModified.Format("2006-01-02"),
-			fmt.Sprintf("%d", f.CommitCount),
-			dormant,
-		})
-	}
-
 	var sb strings.Builder
-	sb.WriteString("\n\n")
-	sb.WriteString(m.newTable(selectedInView, []string{"File", "Last Modified", "Commits", "Dormant"}, rows))
+	sb.WriteString("\n")
+	sb.WriteString(m.renderTable())
 	sb.WriteString(styleDim.Render("\n\n  Files sorted by oldest last-modified — potential dead code.\n"))
-	sb.WriteString("  " + styleLabel.Render(m.page.View()))
 	return sb.String()
 }
