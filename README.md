@@ -22,7 +22,7 @@ Visualize commit history, branch activity, file churn, contributor activity, TOD
 | **Overview** | Repo name, path, total commits, contributors, branches, tags (with recent tag names), size, and latest commit |
 | **Branches** | All branches sorted by most-recent commit — shows author, commit age, hash, and `● active` badge for branches touched in the last 7 days |
 | **Churn** | Files ranked by commit count with heatmap bars, author counts, and last-modified timestamps |
-| **Activity** | 52-week contribution calendar + contributor leaderboard with commit share |
+| **Activity** | 52-week contribution calendar + contributor leaderboard with commit share and email |
 | **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with a badge summary |
 | **Stale** | Files sorted by oldest last-modified — useful for spotting dead code |
 
@@ -83,8 +83,8 @@ Paths starting with `~` are expanded to your home directory on all platforms.
 | Key | Action |
 |-----|--------|
 | `←` `→` or `Tab` | Switch tabs |
-| `↑` `↓` or `k` `j` | Move cursor through the current page |
-| `g` / `G` | Jump to first / last item |
+| `↑` `↓` or `k` `j` | Scroll the table |
+| `g` / `G` | Jump to first / last row |
 | `Esc` | Clear filter → back to input screen |
 | `q` / `Ctrl+C` | Quit |
 
@@ -93,19 +93,19 @@ Paths starting with `~` are expanded to your home directory on all platforms.
 | Key | Action |
 |-----|--------|
 | `/` | Filter list by filename |
-| `o` / `Enter` | Open selected file in the built-in viewer |
+| `o` / `Enter` | Open selected file in the built-in pager |
 | `y` | Copy selected file path to clipboard |
 | `r` | Refresh analysis |
 
 > `q` / `Ctrl+C` / `Esc` all work during loading — the app is never frozen.
 
-### File viewer
+### File pager
 
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Scroll line by line |
 | `PgUp` `PgDn` | Scroll page by page |
-| `q` / `Esc` | Close viewer, return to list |
+| `q` / `Esc` | Close pager, return to list |
 
 ---
 
@@ -125,8 +125,9 @@ repoview/
         ├── styles.go              # Palette and every lipgloss style — retheme here
         ├── helpers.go             # Blob animation, path utils, cloneRepo, runAnalysis
         ├── model.go               # Model struct, New(), Init(), Update(), state helpers
-        ├── view.go                # View(), screen renderers, newTable()
+        ├── view.go                # View(), screen renderers, renderTable()
         └── tabs.go                # One render function per tab
+        └── keys.go                # Key bindings (bubbles/key + bubbles/help)
 ```
 
 ---
@@ -134,8 +135,8 @@ repoview/
 ## 🧱 Built With
 
 - [**Bubble Tea**](https://github.com/charmbracelet/bubbletea) — TUI framework
-- [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner, paginator, viewport)
-- [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling and layout
+- [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (table, spinner, viewport/pager, text input, help)
+- [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling and layout; adaptive colors for light/dark terminals
 
 ---
 
