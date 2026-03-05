@@ -232,13 +232,14 @@ func (m Model) renderActivity() string {
 		bar := utils.Heatmap(c.Count, contribs[0].Count, 20)
 		rows = append(rows, []string{
 			c.Name,
+			c.Email,
 			fmt.Sprintf("%d", c.Count),
 			fmt.Sprintf("%.1f%%", pct),
 			bar,
 		})
 	}
 
-	sb.WriteString(m.newTable(selectedInView, []string{"Name", "Commits", "Share", "Bar"}, rows))
+	sb.WriteString(m.newTable(selectedInView, []string{"Name", "Email", "Commits", "Share", "Bar"}, rows))
 	sb.WriteString("\n\n" + styleLabel.Render(m.page.View()))
 	return sb.String()
 }
