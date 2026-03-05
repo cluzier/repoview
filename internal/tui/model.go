@@ -587,10 +587,11 @@ func (m *Model) rebuildTable() {
 	case TabActivity:
 		prefixLines = 17
 		cols = []table.Column{
-			{Title: "Name", Width: pw * 30 / 100},
+			{Title: "Name", Width: pw * 25 / 100},
+			{Title: "Email", Width: pw * 20 / 100},
 			{Title: "Commits", Width: 8},
 			{Title: "Share", Width: 8},
-			{Title: "Bar", Width: pw * 25 / 100},
+			{Title: "Bar", Width: pw * 20 / 100},
 		}
 		contribs := m.result.ContributorActivity
 		total := 0
@@ -606,7 +607,7 @@ func (m *Model) rebuildTable() {
 			if len(contribs) > 0 {
 				bar = utils.Heatmap(c.Count, contribs[0].Count, 20)
 			}
-			rows = append(rows, table.Row{c.Name, fmt.Sprintf("%d", c.Count), fmt.Sprintf("%.1f%%", pct), bar})
+			rows = append(rows, table.Row{c.Name, c.Email, fmt.Sprintf("%d", c.Count), fmt.Sprintf("%.1f%%", pct), bar})
 		}
 
 	case TabTodos:
