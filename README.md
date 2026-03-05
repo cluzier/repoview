@@ -4,7 +4,7 @@
 
 **A terminal UI for understanding any Git repository at a glance.**
 
-Visualize commit history, file churn, contributor activity, TODO comments, and stale files — for any local path or GitHub URL.
+Visualize commit history, branch activity, file churn, contributor activity, TODO comments, and stale files — for any local path or GitHub URL.
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -19,13 +19,14 @@ Visualize commit history, file churn, contributor activity, TODO comments, and s
 
 | Tab | What you get |
 |-----|-------------|
-| **Overview** | Repo name, path, total commits, contributors, branches, tags, size, and latest commit |
+| **Overview** | Repo name, path, total commits, contributors, branches, tags (with recent tag names), size, and latest commit |
+| **Branches** | All branches sorted by most-recent commit — shows author, commit age, hash, and `● active` badge for branches touched in the last 7 days |
 | **Churn** | Files ranked by commit count with heatmap bars, author counts, and last-modified timestamps |
 | **Activity** | 52-week contribution calendar + contributor leaderboard with commit share |
 | **Todos** | Scans for `TODO`, `FIXME`, `HACK`, and `XXX` across 40+ file types with a badge summary |
 | **Stale** | Files sorted by oldest last-modified — useful for spotting dead code |
 
-> Works with **local paths** and **remote GitHub URLs**. Remote repos are shallow-cloned (last 200 commits) to a temp directory and cleaned up automatically on exit. Commit history, churn counts, and activity data will reflect only those commits for large repositories.
+> Works with **local paths** and **remote GitHub URLs**. Remote repos are shallow-cloned (last 200 commits) to a temp directory and **deleted automatically on exit** — including any orphaned dirs from previous crashed sessions. Commit history, churn counts, and activity data will reflect only those commits for large repositories.
 
 ---
 
@@ -96,6 +97,8 @@ Paths starting with `~` are expanded to your home directory on all platforms.
 | `y` | Copy selected file path to clipboard |
 | `r` | Refresh analysis |
 
+> `q` / `Ctrl+C` / `Esc` all work during loading — the app is never frozen.
+
 ### File viewer
 
 | Key | Action |
@@ -113,9 +116,9 @@ repoview/
 ├── main.go                        # Entry point — version flag + Bubble Tea bootstrap
 └── internal/
     ├── git_analysis/
-    │   └── analysis.go            # All repository data gathering (go-git + exec git)
+    │   └── analysis.go            # All repository data gathering via exec git
     ├── metrics/
-    │   └── metrics.go             # Risk scoring and TODO/FIXME scanner
+    │   └── metrics.go             # Risk scoring and TODO/FIXME scanner (word-boundary aware)
     ├── utils/
     │   └── utils.go               # Shared formatting helpers (bytes, time, truncate)
     └── tui/
@@ -133,7 +136,6 @@ repoview/
 - [**Bubble Tea**](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [**Bubbles**](https://github.com/charmbracelet/bubbles) — UI components (text input, spinner, paginator, viewport)
 - [**Lip Gloss**](https://github.com/charmbracelet/lipgloss) — terminal styling and layout
-- [**go-git**](https://github.com/go-git/go-git) — pure Go Git implementation (root detection, cloning)
 
 ---
 
